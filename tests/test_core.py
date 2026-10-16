@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import hashlib
 import tempfile
@@ -52,6 +53,20 @@ class ConfigTests(unittest.TestCase):
             config.write_text(json.dumps({"services": [{**entry, "command": "my-agent", "args": ["--cwd", "{workspace}"]}]}))
             self.assertEqual(load_services(config)[0].args, ("--cwd", "{workspace}"))
 
+    def test_strips_quotes_from_copied_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "my skill").mkdir()
+            (root / "my skill" / "SKILL.md").write_text("x")
+            config = root / "services.json"
+            config.write_text(json.dumps({"services": [{
+                "name": "mine", "description": "Mine", "skill": f' "{root / "my skill"}" ',
+                "engine": "codex", "command": '"C:\\Program Files\\codex.exe"', "port": 8765,
+            }]}))
+            service = load_services(config)[0]
+            self.assertEqual(service.skill, (root / "my skill").resolve())
+            self.assertEqual(service.command, "C:\\Program Files\\codex.exe")
+
 
 class RunnerTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -76,11 +91,40 @@ class RunnerTests(unittest.TestCase):
             result = _run_sync(self.service, "edit file", [{"path": "README.md", "content": "before"}])
         self.assertEqual(result["answer"], "Edited README.md")
         self.assertEqual(result["changed_files"], [
-            {"path": "README.md", "content": "after", "base_sha256": hashlib.sha256(b"before").hexdigest()},
-            {"path": "new.txt", "content": "new", "base_sha256": None},
+            {"path": "README.md", "content": "after", "encoding": "utf-8", "base_sha256": hashlib.sha256(b"before").hexdigest()},
+            {"path": "new.txt", "content": "new", "encoding": "utf-8", "base_sha256": None},
         ])
         self.assertEqual(result["deleted_files"], [])
         self.assertNotIn("secret internal instructions", repr(result))
+
+    def test_binary_input_and_output_round_trip_as_base64(self) -> None:
+        template = b"PK\x03\x04\xff\xfe template"
+        generated = b"PK\x03\x04\x00\x9c generated docx"
+
+        def fake_run(command, **kwargs):
+            workspace = Path(kwargs["cwd"])
+            self.assertEqual((workspace / "template.docx").read_bytes(), template)
+            (workspace / "out").mkdir()
+            (workspace / "out/report.docx").write_bytes(generated)
+            (workspace / "template.docx").write_bytes(template + b"\x00")
+            return type("Result", (), {"returncode": 0, "stdout": "done", "stderr": ""})()
+
+        with patch("nunchaku.runner.subprocess.run", side_effect=fake_run):
+            result = _run_sync(self.service, "make docx", [
+                {"path": "template.docx", "content": base64.b64encode(template).decode(), "encoding": "base64"},
+            ])
+        self.assertEqual(result["changed_files"], [
+            {"path": "out/report.docx", "content": base64.b64encode(generated).decode(),
+             "encoding": "base64", "base_sha256": None},
+            {"path": "template.docx", "content": base64.b64encode(template + b"\x00").decode(),
+             "encoding": "base64", "base_sha256": hashlib.sha256(template).hexdigest()},
+        ])
+
+    def test_rejects_bad_encoding(self) -> None:
+        for item in [{"path": "a.bin", "content": "x", "encoding": "hex"},
+                     {"path": "a.bin", "content": "not base64!", "encoding": "base64"}]:
+            with self.subTest(item=item), self.assertRaises(ValueError):
+                _run_sync(self.service, "task", [item])
 
     def test_rejects_parent_and_reserved_paths(self) -> None:
         for name in ["../private/SKILL.md", "/etc/passwd", ".agents/skills/x", "a//b", "a\\b"]:
@@ -163,6 +207,50 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(result.conflicts, ["README.md"])
             self.assertEqual(target.read_text(), "concurrent edit")
             self.assertEqual(result.proposed_changes[0]["content"], "remote edit")
+
+    def test_binary_files_are_sent_and_applied_as_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template = b"PK\x03\x04\xff template"
+            (root / "template.xlsx").write_bytes(template)
+            (root / "notes.md").write_bytes(b"line\r\n")
+            sent = {f["path"]: f for f in _snapshot(root, ["template.xlsx", "notes.md"])}
+            self.assertEqual(sent["template.xlsx"]["encoding"], "base64")
+            self.assertEqual(base64.b64decode(sent["template.xlsx"]["content"]), template)
+            self.assertEqual(sent["notes.md"], {"path": "notes.md", "content": "line\r\n", "encoding": "utf-8"})
+
+            generated = b"PK\x03\x04\x00 docx bytes"
+            proposal = SkillResult.model_validate({
+                "service": "demo", "engine": "custom", "answer": "done",
+                "changed_files": [
+                    {"path": "out/report.docx", "content": base64.b64encode(generated).decode(),
+                     "encoding": "base64", "base_sha256": None},
+                    {"path": "notes.md", "content": "line\r\nmore\r\n", "encoding": "utf-8",
+                     "base_sha256": hashlib.sha256(b"line\r\n").hexdigest()},
+                ],
+                "deleted_files": [], "note": "proposal",
+            })
+            result = _apply(root, proposal, True)
+            self.assertEqual(result.conflicts, [])
+            self.assertEqual((root / "out/report.docx").read_bytes(), generated)
+            self.assertEqual((root / "notes.md").read_bytes(), b"line\r\nmore\r\n")
+
+    def test_binary_proposals_are_saved_aside_instead_of_inlined(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            generated = b"PK\x03\x04\x00 docx bytes"
+            proposal = SkillResult.model_validate({
+                "service": "demo", "engine": "custom", "answer": "done",
+                "changed_files": [{"path": "out/report.docx", "content": base64.b64encode(generated).decode(),
+                                   "encoding": "base64", "base_sha256": None}],
+                "deleted_files": [], "note": "proposal",
+            })
+            result = _apply(root, proposal, False)
+            self.assertFalse((root / "out/report.docx").exists())
+            change = result.proposed_changes[0]
+            self.assertNotIn("content", change)
+            self.assertEqual(change["proposed_file"], ".nunchaku/proposed/out/report.docx")
+            self.assertEqual((root / change["proposed_file"]).read_bytes(), generated)
 
     def test_bridge_rejects_symlink_input(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

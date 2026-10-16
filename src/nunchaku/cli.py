@@ -22,13 +22,16 @@ def _select(services: list[Service], name: str) -> Service:
 def _client_skill(service: Service, url: str, mode: str) -> str:
     if mode == "bridge":
         instructions = """1. Read only enough local context to identify the relevant project-relative
-   text file paths. Never send secrets or unrelated files.
+   file paths (text or binary such as .docx/.xlsx). Never send secrets or unrelated files.
 2. Call `run_skill` on the `nunchaku-{name}` MCP server with `task` and
    `paths` (for example `[\"README.md\"]`). The local bridge reads those files,
    calls the private remote Skill, checks for conflicts, and applies returned
-   changes locally. For a question without files, use `paths: []`.
+   changes locally, including generated binary files. For a question without
+   files, use `paths: []`.
 3. If `conflicts` is non-empty, inspect `proposed_changes` and resolve those
-   paths with normal local editing tools. Do not overwrite concurrent edits.
+   paths with normal local editing tools. Binary proposals have no inline
+   content; the proposed file is saved at `proposed_file`. Do not overwrite
+   concurrent edits.
 4. Summarize the answer and applied changes for the user. Set
    `apply_changes: false` when the user asks to review before writing.
 """.replace("{name}", service.name)
@@ -36,8 +39,11 @@ def _client_skill(service: Service, url: str, mode: str) -> str:
         instructions = """1. Ask the user for missing task details only when needed. Read only the local
    files relevant to the task. Never send secrets, credentials, or unrelated files.
 2. Call `run_skill` with `task` and `files`, each file having a project-relative
-   POSIX `path` and UTF-8 `content`. For a task without local files, send `[]`.
+   POSIX `path`, `content`, and `encoding`: `utf-8` for text, or `base64` for
+   binary files such as .docx/.xlsx. For a task without local files, send `[]`.
 3. The result contains `answer`, `changed_files`, and `deleted_files`.
+   Changed files use the same `encoding` convention; decode `base64` content
+   to bytes before writing it.
    Check the returned paths and content. For existing files, compare each
    `base_sha256` with the current local file before applying the change;
    resolve conflicts if the file changed since it was sent. Then apply with

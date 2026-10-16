@@ -13,6 +13,15 @@ PLACEHOLDERS = ("{prompt}", "{workspace}", "{output}", "{skill}")
 MAX_ARGS = 64
 
 
+def _unquote(value: object) -> object:
+    # Windows "Copy as path" wraps paths in double quotes.
+    if isinstance(value, str):
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1].strip()
+    return value
+
+
 @dataclass(frozen=True)
 class Service:
     name: str
@@ -55,7 +64,7 @@ def parse_services(raw: object, config_path: Path) -> list[Service]:
         description = item.get("description")
         if not isinstance(description, str) or not description.strip() or "\n" in description or "\r" in description:
             raise ValueError(f"{name}: description must be a non-empty single line")
-        skill_value = item.get("skill")
+        skill_value = _unquote(item.get("skill"))
         if not isinstance(skill_value, str) or not skill_value:
             raise ValueError(f"{name}: skill directory is required")
         skill = (config_path.parent / skill_value).resolve()
@@ -80,7 +89,7 @@ def parse_services(raw: object, config_path: Path) -> list[Service]:
         timeout = item.get("timeout_seconds", 180)
         if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= 3600:
             raise ValueError(f"{name}: timeout_seconds must be 1..3600")
-        command = item.get("command")
+        command = _unquote(item.get("command"))
         if command is not None and (not isinstance(command, str) or not command.strip()):
             raise ValueError(f"{name}: command must be a binary path or name")
         args = item.get("args")

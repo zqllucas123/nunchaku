@@ -27,7 +27,7 @@ sequenceDiagram
 - **本地公开连接 Skill**：只有用途说明和操作步骤，帮助 Agent 在用户自然语言请求下自动选择 MCP 工具。客户可以看到这部分内容。
 - **本地 MCP 桥接器**：通过 stdio MCP 接入 Codex/Claude Code。Agent 只传路径；桥接器读取文件、调用远端、核查哈希并应用结果。也可跳过桥接器，直连远端 MCP。
 - **远端 MCP 协议**：使用标准 Streamable HTTP。客户端负责 `initialize`、`tools/list`、`tools/call`；本项目不定义另一套传输协议。
-- **应用层协议**：远端 `run_skill(task, files)` 接收 `{path, content}` 列表，返回 `answer`、`changed_files` 和 `deleted_files`。改动带原文件 `base_sha256` 以检测冲突。路径以客户项目根目录为基准；文件内容为 UTF-8 文本。
+- **应用层协议**：远端 `run_skill(task, files)` 接收 `{path, content, encoding}` 列表，返回 `answer`、`changed_files` 和 `deleted_files`。改动带原文件 `base_sha256` 以检测冲突。路径以客户项目根目录为基准；文本文件以 UTF-8 传输，二进制文件（如 .docx、.xlsx）以 base64 传输。
 - **服务端执行**：每次调用创建临时目录，复制私有 Skill 和明确提交的文件，运行配置的 `codex`、`claude`、`hermes` 或自定义 CLI，收集文件变化，随后删除临时目录。
 - **服务配置**：每个服务一个 Skill、执行引擎和端口；可运行单个服务或全部服务。每个端口都有独立的 `/mcp` 端点。
 
@@ -160,8 +160,11 @@ Hermes 可用 `hermes mcp add nunchaku-demo-polish --url http://127.0.0.1:8765/m
 
 ```json
 {
-  "task": "把 README 的开头写得更清楚",
-  "files": [{"path": "README.md", "content": "# 项目\n原始介绍...\n"}]
+  "task": "把 README 的开头写得更清楚，并按模板生成 Word 版",
+  "files": [
+    {"path": "README.md", "content": "# 项目\n原始介绍...\n"},
+    {"path": "template.docx", "content": "<base64>", "encoding": "base64"}
+  ]
 }
 ```
 
@@ -171,14 +174,19 @@ Hermes 可用 `hermes mcp add nunchaku-demo-polish --url http://127.0.0.1:8765/m
 {
   "service": "my-skill",
   "engine": "codex",
-  "answer": "已重写开头两段。",
-  "changed_files": [{"path": "README.md", "content": "# 项目\n新介绍...\n", "base_sha256": "<原文件的 SHA-256>"}],
+  "answer": "已重写开头两段，并生成 README.docx。",
+  "changed_files": [
+    {"path": "README.md", "content": "# 项目\n新介绍...\n", "encoding": "utf-8", "base_sha256": "<原文件的 SHA-256>"},
+    {"path": "README.docx", "content": "<base64>", "encoding": "base64", "base_sha256": null}
+  ],
   "deleted_files": [],
   "note": "Changes are proposals. The local Agent must review and apply them in the user's workspace."
 }
 ```
 
-这个 POC 限制为最多 50 个输入/输出文本文件，单文件 256 KB、总计 1 MB；单次调用超时默认 180 秒。每次调用无状态，本地 Agent 若要继续上一轮，需把必要上下文再次传入。二进制文件、增量流式进度、大型项目同步和远端实时调用本地工具尚未实现。
+每个文件条目的 `encoding` 为 `utf-8`（默认，文本）或 `base64`（二进制，如 .docx、.xlsx、图片）。服务端输出能按 UTF-8 解码的文件以文本返回，其余一律 base64。`base_sha256` 按原始字节计算。使用本地桥接器时，Agent 只传路径，编码由桥接器自动处理；有冲突或 `apply_changes: false` 时，二进制提议不内联返回，而是写到客户项目的 `.nunchaku/proposed/<path>`，由 `proposed_file` 指出位置。
+
+这个 POC 限制为最多 50 个输入/输出文件，单文件 10 MB、总计 20 MB（按解码后的字节计）；单次调用超时默认 180 秒。每次调用无状态，本地 Agent 若要继续上一轮，需把必要上下文再次传入。增量流式进度、大型项目同步和远端实时调用本地工具尚未实现。
 
 ## 部署边界与下一步
 

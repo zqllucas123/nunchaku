@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel
 
@@ -10,6 +12,7 @@ from .runner import run_skill
 class ChangedFile(BaseModel):
     path: str
     content: str
+    encoding: Literal["utf-8", "base64"] = "utf-8"
     base_sha256: str | None
 
 
@@ -32,7 +35,7 @@ def build_server(service: Service) -> FastMCP:
         name=f"nunchaku-{service.name}",
         instructions=(
             f"Use run_skill when the user asks for: {service.description}. "
-            "Send only relevant UTF-8 workspace files in files. "
+            "Send only relevant workspace files in files; binary files use encoding=base64. "
             "Review and apply returned changed_files and deleted_files locally."
         ),
         host=service.host,
@@ -47,8 +50,10 @@ def build_server(service: Service) -> FastMCP:
         structured_output=True,
         description=(
             f"{service.description} Runs the private skill on the provider's server. "
-            "Provide the user's task and any relevant UTF-8 files from the local workspace. "
-            "Returns an answer and proposed file changes to review and apply locally. "
+            "Provide the user's task and any relevant files from the local workspace: each file is "
+            "{path, content, encoding}, where encoding is utf-8 (default) for text or base64 for binary files "
+            "such as .docx/.xlsx. "
+            "Returns an answer and proposed file changes (same encoding convention) to review and apply locally. "
             "File paths must be relative to the local project root; do not send secrets or unrelated files."
         ),
     )
