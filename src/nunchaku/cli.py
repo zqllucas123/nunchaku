@@ -103,6 +103,7 @@ def main(argv: list[str] | None = None) -> int:
     single = commands.add_parser("serve", help="serve one MCP endpoint")
     single.add_argument("service")
     commands.add_parser("serve-all", help="serve every configured endpoint")
+    commands.add_parser("gateway", help="serve one public MCP endpoint that routes to every service")
     dashboard = commands.add_parser("dashboard", help="open the local service management UI")
     dashboard.add_argument("--port", type=int, default=8787, help="local dashboard port (default: 8787)")
     client = commands.add_parser("client-skill", help="generate a public local connector Skill")
@@ -111,8 +112,14 @@ def main(argv: list[str] | None = None) -> int:
     client.add_argument("--output", required=True, help="destination Skill directory")
     client.add_argument("--mode", choices=["bridge", "direct"], default="bridge")
     bridge = commands.add_parser("bridge", help="run a local stdio MCP bridge for one project")
-    bridge.add_argument("--connector", required=True, help="client-skill's connector.json")
+    source = bridge.add_mutually_exclusive_group(required=True)
+    source.add_argument("--url", help="gateway MCP URL; mirrors every service it lists")
+    source.add_argument("--connector", help="client-skill's connector.json (single service)")
     bridge.add_argument("--root", required=True, help="absolute local project root")
+    skills = commands.add_parser("install-skill", help="install the generic nunchaku-remote connector Skill")
+    skills.add_argument("--path", action="append", help="Skill directory to install into (repeatable)")
+    skills.add_argument("--url", help="gateway URL, only used in the printed next step")
+    skills.add_argument("--force", action="store_true", help="replace an existing nunchaku-remote Skill")
     args = parser.parse_args(argv)
 
     try:
@@ -120,6 +127,24 @@ def main(argv: list[str] | None = None) -> int:
             from .admin import serve_dashboard
             print(f"Dashboard: http://127.0.0.1:{args.port}/", flush=True)
             serve_dashboard(args.config, args.port)
+            return 0
+        if args.action == "install-skill":
+            from .skills import candidates, choose, install, registration_hint
+            if args.path:
+                targets = [Path(p) for p in args.path]
+            else:
+                found = candidates()
+                print("Agent Skill directories found:" if found else "No known Agent Skill directory found.")
+                targets = choose(found)
+            for target in targets:
+                print(f"Installed {install(target, args.force)}")
+            if args.url:
+                _validate_url(args.url)
+            print("\n" + registration_hint(args.url))
+            return 0
+        if args.action == "bridge" and args.url:
+            from .bridge import serve_gateway_bridge
+            serve_gateway_bridge(_validate_url(args.url), Path(args.root))
             return 0
         if args.action == "bridge":
             connector = json.loads(Path(args.connector).expanduser().read_text(encoding="utf-8"))
@@ -134,6 +159,10 @@ def main(argv: list[str] | None = None) -> int:
             if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= 3600:
                 raise ValueError("connector timeout_seconds must be 1..3600")
             serve_bridge(name, description, url, Path(args.root), timeout)
+            return 0
+        if args.action == "gateway":
+            from .gateway import serve_gateway
+            serve_gateway(args.config)
             return 0
         services = load_services(args.config)
         if args.action == "list":

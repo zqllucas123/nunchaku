@@ -23,7 +23,10 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
-from .config import Service, load_services, parse_services
+from .config import Service, load_gateway, load_services, parse_services
+
+# Service names start with a letter, so this log file can't collide with one.
+GATEWAY_LOG = "_gateway"
 
 
 def _entry(service: Service) -> dict:
@@ -40,11 +43,17 @@ class ServiceManager:
             self._write([])
         self.services = load_services(self.path)
         self.processes: dict[str, subprocess.Popen] = {}
+        self.gateway_process: subprocess.Popen | None = None
         self.lock = threading.RLock()
         self.logs_dir = self.path.parent / ".nunchaku" / "logs"
 
     def _write(self, services: list[Service]) -> None:
-        payload = json.dumps({"services": [_entry(s) for s in services]}, ensure_ascii=False, indent=2) + "\n"
+        document: dict = {"services": [_entry(s) for s in services]}
+        if self.path.exists():
+            current = json.loads(self.path.read_text(encoding="utf-8"))
+            if isinstance(current, dict) and "gateway" in current:
+                document["gateway"] = current["gateway"]
+        payload = json.dumps(document, ensure_ascii=False, indent=2) + "\n"
         descriptor, name = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.path.parent)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
@@ -120,49 +129,88 @@ class ServiceManager:
             service = self._find(name)
             if self._state(name)[0] == "running":
                 raise RuntimeError("service is already running")
-            try:
-                with socket.create_connection((service.host, service.port), timeout=0.2):
-                    raise RuntimeError(f"port {service.port} is already in use")
-            except OSError:
-                pass
-            self.logs_dir.mkdir(parents=True, exist_ok=True)
-            with (self.logs_dir / f"{name}.log").open("ab") as log:
-                log.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Starting {name}\n".encode())
-                log.flush()
-                process = subprocess.Popen(
-                    [sys.executable, "-m", "nunchaku", "--config", str(self.path), "serve", name],
-                    stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
-                    start_new_session=True,
-                )
-            self.processes[name] = process
+            self.processes[name] = process = self._spawn(name, ["serve", name], service.host, service.port)
+        self._wait_ready(process, service.host, service.port, "service")
+        return next(x for x in self.list() if x["name"] == name)
+
+    def _spawn(self, log_name: str, command: list[str], host: str, port: int) -> subprocess.Popen:
+        try:
+            with socket.create_connection((host, port), timeout=0.2):
+                raise RuntimeError(f"port {port} is already in use")
+        except OSError:
+            pass
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        with (self.logs_dir / f"{log_name}.log").open("ab") as log:
+            log.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Starting {log_name}\n".encode())
+            log.flush()
+            return subprocess.Popen(
+                [sys.executable, "-m", "nunchaku", "--config", str(self.path), *command],
+                stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+
+    @staticmethod
+    def _wait_ready(process: subprocess.Popen, host: str, port: int, kind: str) -> None:
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
             if process.poll() is not None:
-                raise RuntimeError(f"service exited with code {process.returncode}; see logs")
+                raise RuntimeError(f"{kind} exited with code {process.returncode}; see logs")
             try:
-                with socket.create_connection((service.host, service.port), timeout=0.1):
-                    return next(x for x in self.list() if x["name"] == name)
+                with socket.create_connection((host, port), timeout=0.1):
+                    return
             except OSError:
                 time.sleep(0.08)
-        raise RuntimeError("service did not become ready within 3 seconds; see logs")
+        raise RuntimeError(f"{kind} did not become ready within 3 seconds; see logs")
+
+    def gateway(self) -> dict:
+        with self.lock:
+            settings = load_gateway(self.path)
+            process = self.gateway_process
+            code = None if process is None else process.poll()
+            state = "stopped" if process is None else ("running" if code is None else "exited")
+            host = "127.0.0.1" if settings.host in {"0.0.0.0", "::"} else settings.host
+            return {"host": settings.host, "port": settings.port, "state": state, "exit_code": code,
+                    "endpoint": f"http://{host}:{settings.port}/mcp"}
+
+    def start_gateway(self) -> dict:
+        with self.lock:
+            if self.gateway()["state"] == "running":
+                raise RuntimeError("gateway is already running")
+            settings = load_gateway(self.path)
+            self.gateway_process = process = self._spawn(GATEWAY_LOG, ["gateway"], settings.host, settings.port)
+        self._wait_ready(process, settings.host, settings.port, "gateway")
+        return self.gateway()
+
+    def stop_gateway(self) -> dict:
+        with self.lock:
+            if self.gateway_process is not None:
+                self._terminate(self.gateway_process)
+            self.gateway_process = None
+            return self.gateway()
+
+    @staticmethod
+    def _terminate(process: subprocess.Popen) -> None:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
 
     def stop(self, name: str) -> dict:
         with self.lock:
             self._find(name)
             process = self.processes.get(name)
-            if process and process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=5)
+            if process:
+                self._terminate(process)
             self.processes.pop(name, None)
             return next(x for x in self.list() if x["name"] == name)
 
     def logs(self, name: str) -> str:
         with self.lock:
-            self._find(name)
+            if name != GATEWAY_LOG:
+                self._find(name)
             path = self.logs_dir / f"{name}.log"
             if not path.exists():
                 return "尚无日志。"
@@ -172,6 +220,7 @@ class ServiceManager:
                 return stream.read().decode("utf-8", errors="replace")
 
     def close(self) -> None:
+        self.stop_gateway()
         for name in list(self.processes):
             self.stop(name)
 
@@ -231,6 +280,26 @@ def create_app(config_path: str | Path) -> Starlette:
         except RuntimeError as exc:
             return JSONResponse({"error": str(exc)}, status_code=409)
 
+    async def gateway_api(request: Request) -> Response:
+        action = request.path_params.get("action")
+        try:
+            if request.method == "GET" and action is None:
+                return JSONResponse(manager.gateway())
+            if request.method == "GET" and action == "logs":
+                return JSONResponse({"logs": manager.logs(GATEWAY_LOG)})
+            check_write(request)
+            if request.method == "POST" and action == "start":
+                return JSONResponse(manager.start_gateway())
+            if request.method == "POST" and action == "stop":
+                return JSONResponse(manager.stop_gateway())
+            return JSONResponse({"error": "unsupported operation"}, status_code=405)
+        except PermissionError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=403)
+        except (ValueError, OSError, json.JSONDecodeError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except RuntimeError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+
     async def connector(request: Request) -> Response:
         from .cli import _client_skill, _codex_metadata, _validate_url
 
@@ -270,6 +339,8 @@ def create_app(config_path: str | Path) -> Starlette:
     return Starlette(routes=[
         Route("/", asset), Route("/assets/{asset}", asset),
         Route("/api/services", api, methods=["GET", "POST"]),
+        Route("/api/gateway", gateway_api, methods=["GET"]),
+        Route("/api/gateway/{action}", gateway_api, methods=["GET", "POST"]),
         Route("/api/services/{name}/connector", connector, methods=["GET"]),
         Route("/api/services/{name}/{action}", api, methods=["GET", "POST"]),
         Route("/api/services/{name}", api, methods=["PUT", "DELETE"]),

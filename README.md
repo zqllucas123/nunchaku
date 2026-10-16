@@ -1,6 +1,6 @@
 # nunchaku
 
-把私有 Agent Skill 放在服务端执行，并以标准 MCP 工具提供给客户本地的 Codex、Claude Code 等 Agent。当前版本是一个可运行的 POC。详细设计见[架构说明](docs/architecture.md)。
+把私有 Agent Skill 放在服务端执行，并以标准 MCP 工具提供给客户本地的 Codex、Claude Code 等 Agent。当前版本是一个可运行的 POC。详细设计见[架构说明](docs/architecture.md)；客户机器上的接入步骤见[客户端配置与使用手册](docs/client-setup.md)。
 
 ## 架构
 
@@ -30,6 +30,27 @@ sequenceDiagram
 - **应用层协议**：远端 `run_skill(task, files)` 接收 `{path, content, encoding}` 列表，返回 `answer`、`changed_files` 和 `deleted_files`。改动带原文件 `base_sha256` 以检测冲突。路径以客户项目根目录为基准；文本文件以 UTF-8 传输，二进制文件（如 .docx、.xlsx）以 base64 传输。
 - **服务端执行**：每次调用创建临时目录，复制私有 Skill 和明确提交的文件，运行配置的 `codex`、`claude`、`hermes` 或自定义 CLI，收集文件变化，随后删除临时目录。
 - **服务配置**：每个服务一个 Skill、执行引擎和端口；可运行单个服务或全部服务。每个端口都有独立的 `/mcp` 端点。
+- **统一网关**：`nunchaku gateway` 对外只开一个端口。它把 `services.json` 当作服务注册表，每个**正在运行**的服务列为一个 MCP 工具（工具名即服务名），按 `tools/call` 的工具名把请求转发给对应的服务进程。各服务仍是独立进程、独立端口。客户只需配置网关这一个地址；服务端新增服务后，客户刷新 MCP 连接即可看到。
+
+## 统一网关
+
+```bash
+uv run nunchaku --config services.json serve-all   # 或在管理台逐个启动服务
+uv run nunchaku --config services.json gateway     # 默认 127.0.0.1:8750
+```
+
+网关地址在 `services.json` 顶层配置，省略时为 `127.0.0.1:8750`，端口不能与任何服务相同：
+
+```json
+{
+  "gateway": {"host": "127.0.0.1", "port": 8750},
+  "services": [ ... ]
+}
+```
+
+网关每次 `tools/list` 时检查 `services.json` 是否变化，并探测各服务端口（结果缓存 3 秒），只列出在线的服务，所以增删服务不需要重启网关。管理台顶部也可以启停网关、复制地址、查看日志。网关是唯一对外入口，后续的 HTTPS、鉴权、配额应加在这一层；各服务端口保持只监听本机。
+
+客户侧只需安装 wheel、执行 `nunchaku install-skill` 安装通用连接 Skill，再把 `nunchaku bridge --url <网关地址> --root <项目目录>` 配置为名为 `nunchaku` 的 stdio MCP 服务，详见[客户端配置与使用手册](docs/client-setup.md)。下文的 `client-skill` 是逐服务连接的旧方式，仍然可用。
 
 ## 快速开始
 

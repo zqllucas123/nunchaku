@@ -1,0 +1,3 @@
+interface:
+  display_name: "nunchaku remote"
+  short_description: "Use remote skill services from the nunchaku MCP server"

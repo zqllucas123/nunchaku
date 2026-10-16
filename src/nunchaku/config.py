@@ -35,10 +35,37 @@ class Service:
     args: tuple[str, ...] | None = None
 
 
+@dataclass(frozen=True)
+class Gateway:
+    host: str = "127.0.0.1"
+    port: int = 8750
+
+
 def load_services(path: str | Path) -> list[Service]:
     config_path = Path(path).expanduser().resolve()
     raw = json.loads(config_path.read_text(encoding="utf-8"))
     return parse_services(raw, config_path)
+
+
+def load_gateway(path: str | Path) -> Gateway:
+    config_path = Path(path).expanduser().resolve()
+    raw = json.loads(config_path.read_text(encoding="utf-8"))
+    return parse_gateway(raw, parse_services(raw, config_path))
+
+
+def parse_gateway(raw: object, services: list[Service]) -> Gateway:
+    item = raw.get("gateway", {}) if isinstance(raw, dict) else {}
+    if not isinstance(item, dict) or set(item) - {"host", "port"}:
+        raise ValueError("gateway must be an object with host and port")
+    host = item.get("host", Gateway.host)
+    port = item.get("port", Gateway.port)
+    if not isinstance(host, str) or not host:
+        raise ValueError("gateway: host is required")
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        raise ValueError("gateway: port must be 1..65535")
+    if any(service.port == port for service in services):
+        raise ValueError(f"gateway port {port} is already used by a service")
+    return Gateway(host, port)
 
 
 def parse_services(raw: object, config_path: Path) -> list[Service]:

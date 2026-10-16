@@ -6,7 +6,10 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel
 
 from .config import Service
-from .runner import run_skill
+from .runner import MAX_TOTAL_BYTES, run_skill
+
+# Base64 inflates payloads by 4/3; leave headroom for JSON-RPC framing.
+MAX_REQUEST_BYTES = MAX_TOTAL_BYTES * 4 // 3 + 1_000_000
 
 
 class ChangedFile(BaseModel):
@@ -43,6 +46,7 @@ def build_server(service: Service) -> FastMCP:
         streamable_http_path="/mcp",
         stateless_http=True,
         json_response=True,
+        max_request_body_size=MAX_REQUEST_BYTES,
     )
 
     @mcp.tool(

@@ -1,5 +1,5 @@
 const $ = (selector) => document.querySelector(selector);
-const state = { services: [], selected: null, editing: null, exporting: null, busy: false, signature: null };
+const state = { services: [], selected: null, editing: null, exporting: null, busy: false, signature: null, gateway: null };
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[char]));
 const path = (name) => `/api/services/${encodeURIComponent(name)}`;
 let toastTimer;
@@ -74,13 +74,55 @@ async function loadLogs(name) {
 
 async function refresh(silent = false) {
   try {
-    const result = await request("/api/services");
-    const signature = JSON.stringify(result.services);
+    const [result, gateway] = await Promise.all([request("/api/services"), request("/api/gateway").catch((error) => ({error: error.message}))]);
+    const signature = JSON.stringify([result.services, gateway]);
     if (signature === state.signature) return;
     state.signature = signature;
     state.services = result.services;
+    state.gateway = gateway;
     render();
+    renderGateway();
   } catch (error) { if (!silent) toast(error.message, true); }
+}
+
+function renderGateway() {
+  const gateway = state.gateway;
+  if (!gateway) return;
+  if (gateway.error) {
+    $("#gateway-panel").innerHTML = `<div class="gateway-body"><div><div class="eyebrow">GATEWAY</div><strong>统一网关</strong><p class="detail-desc">${escapeHtml(gateway.error)}</p></div></div>`;
+    return;
+  }
+  const running = gateway.state === "running";
+  const online = state.services.filter((x) => x.state === "running").length;
+  $("#gateway-panel").innerHTML = `<div class="gateway-body">
+    <div class="gateway-info"><div class="eyebrow">GATEWAY · 客户唯一连接地址</div><strong>统一网关</strong>
+      <p class="detail-desc">按工具名把请求转发到各服务进程。只会列出正在运行的服务（当前 ${online} 个）。</p></div>
+    <span class="state-badge ${escapeHtml(gateway.state)}"><i></i>${running ? "运行中" : gateway.state === "exited" ? `已退出 · ${escapeHtml(gateway.exit_code)}` : "已停止"}</span>
+    <div class="endpoint-box"><code title="服务端本机地址；跨机器时客户应使用其可访问的地址">${escapeHtml(gateway.endpoint)}</code><button class="text-button" data-gateway="copy">复制地址</button><button class="text-button" data-gateway="logs">查看日志</button></div>
+    <button class="button ${running ? "secondary" : "primary"}" data-gateway="${running ? "stop" : "start"}">${running ? "■ 停止网关" : "▶ 启动网关"}</button>
+  </div><pre class="logs" id="gateway-logs" hidden></pre>`;
+}
+
+async function performGateway(action) {
+  if (!state.gateway || state.busy) return;
+  if (action === "copy") {
+    try { await navigator.clipboard.writeText(state.gateway.endpoint); toast("网关地址已复制"); }
+    catch { toast("复制失败，请手动选择地址", true); }
+    return;
+  }
+  if (action === "logs") {
+    const node = $("#gateway-logs");
+    try { node.textContent = (await request("/api/gateway/logs")).logs; node.hidden = false; }
+    catch (error) { toast(error.message, true); }
+    return;
+  }
+  state.busy = true;
+  try {
+    await request(`/api/gateway/${action}`, {method:"POST",headers:{"Content-Type":"application/json"}});
+    await refresh();
+    toast(action === "start" ? "网关已启动" : "网关已停止");
+  } catch (error) { toast(error.message, true); await refresh(true); }
+  finally { state.busy = false; }
 }
 
 function syncEngineFields() {
@@ -192,5 +234,6 @@ $("#export-form").addEventListener("submit", exportConnector);
 document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => $(`#${button.dataset.close}`).close()));
 $("#service-list").addEventListener("click", (event) => { const row = event.target.closest("[data-select]"); if (row) { state.selected = row.dataset.select; render(); } });
 $("#detail-panel").addEventListener("click", (event) => { const button = event.target.closest("[data-action]"); if (button) perform(button.dataset.action); });
+$("#gateway-panel").addEventListener("click", (event) => { const button = event.target.closest("[data-gateway]"); if (button) performGateway(button.dataset.gateway); });
 refresh();
 setInterval(() => { if (!document.hidden && !state.busy && !$("#service-dialog").open && !$("#export-dialog").open) refresh(true); }, 5000);

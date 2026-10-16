@@ -5,8 +5,9 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+import anyio
 import httpx
-from mcp import ClientSession
+from mcp import ClientSession, types
 from mcp.client.streamable_http import streamable_http_client
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel
@@ -15,6 +16,8 @@ from .runner import MAX_FILES, MAX_FILE_BYTES, MAX_TOTAL_BYTES, _safe_path, deco
 from .server import SkillResult
 
 PROPOSED_DIR = (".nunchaku", "proposed")
+# Tool _meta key the gateway uses to mark its service tools.
+META_KEY = "nunchaku"
 
 
 class BridgeResult(BaseModel):
@@ -113,28 +116,28 @@ def _apply(root: Path, result: SkillResult, apply_changes: bool) -> BridgeResult
     )
 
 
-async def invoke_remote(url: str, timeout_seconds: int, task: str, files: list[dict[str, str]]) -> SkillResult:
+async def invoke_remote(url: str, timeout_seconds: int, task: str, files: list[dict[str, str]],
+                        tool: str = "run_skill") -> SkillResult:
     async with httpx.AsyncClient(timeout=timeout_seconds + 10) as http_client:
         async with streamable_http_client(url, http_client=http_client) as (read, write, _):
             async with ClientSession(read, write) as client:
                 await client.initialize()
                 response = await client.call_tool(
-                    "run_skill",
+                    tool,
                     {"task": task, "files": files},
                     read_timeout_seconds=timedelta(seconds=timeout_seconds + 10),
                 )
-                if response.isError:
-                    detail = " ".join(getattr(item, "text", "") for item in response.content)
-                    raise RuntimeError(f"remote skill failed: {detail[:2000]}")
-                if response.structuredContent is None:
-                    raise RuntimeError("remote service did not return structured content")
-                return SkillResult.model_validate(response.structuredContent)
+    # Raise outside the client's task group, which would otherwise hide the message in an ExceptionGroup.
+    if response.isError:
+        detail = " ".join(getattr(item, "text", "") for item in response.content)
+        raise RuntimeError(f"remote skill failed: {detail[:2000]}")
+    if response.structuredContent is None:
+        raise RuntimeError("remote service did not return structured content")
+    return SkillResult.model_validate(response.structuredContent)
 
 
 def build_bridge(name: str, description: str, url: str, root: Path, timeout_seconds: int = 180) -> FastMCP:
-    root = root.expanduser().resolve()
-    if not root.is_dir():
-        raise ValueError(f"project root is not a directory: {root}")
+    root = _check_root(root)
     mcp = FastMCP(
         name=f"nunchaku-{name}",
         instructions=(
@@ -142,9 +145,29 @@ def build_bridge(name: str, description: str, url: str, root: Path, timeout_seco
             "the local bridge reads them and applies returned changes after conflict checks."
         ),
     )
+    _register(mcp, root, url, "run_skill", "run_skill", name, description, timeout_seconds)
+    return mcp
 
-    @mcp.tool(
-        name="run_skill",
+
+def _check_root(root: Path) -> Path:
+    root = root.expanduser().resolve()
+    if not root.is_dir():
+        raise ValueError(f"project root is not a directory: {root}")
+    return root
+
+
+def _register(mcp: FastMCP, root: Path, url: str, local_name: str, remote_tool: str,
+              service: str, description: str, timeout_seconds: int) -> None:
+    async def execute(task: str, paths: list[str] | None = None, apply_changes: bool = True) -> BridgeResult:
+        files = _snapshot(root, paths or [])
+        remote = await invoke_remote(url, timeout_seconds, task, files, remote_tool)
+        if remote.service != service:
+            raise RuntimeError(f"unexpected remote service: {remote.service}")
+        return _apply(root, remote, apply_changes)
+
+    mcp.add_tool(
+        execute,
+        name=local_name,
         structured_output=True,
         description=(
             f"{description} Execute the provider's private Skill remotely. "
@@ -154,15 +177,47 @@ def build_bridge(name: str, description: str, url: str, root: Path, timeout_seco
             "under .nunchaku/proposed/ (see proposed_file) instead of being returned inline."
         ),
     )
-    async def execute(task: str, paths: list[str] | None = None, apply_changes: bool = True) -> BridgeResult:
-        files = _snapshot(root, paths or [])
-        remote = await invoke_remote(url, timeout_seconds, task, files)
-        if remote.service != name:
-            raise RuntimeError(f"unexpected remote service: {remote.service}")
-        return _apply(root, remote, apply_changes)
 
+
+async def discover(url: str) -> list[types.Tool]:
+    async with httpx.AsyncClient(timeout=30) as http_client:
+        async with streamable_http_client(url, http_client=http_client) as (read, write, _):
+            async with ClientSession(read, write) as client:
+                await client.initialize()
+                return (await client.list_tools()).tools
+
+
+def build_gateway_bridge(url: str, root: Path, tools: list[types.Tool]) -> FastMCP:
+    """Mirror every gateway tool locally, swapping file contents for project-relative paths."""
+    root = _check_root(root)
+    mcp = FastMCP(
+        name="nunchaku",
+        instructions=(
+            "Each tool is a remote skill service; choose one by its description. Give project-relative "
+            "file paths (text or binary); the local bridge reads them and applies returned changes "
+            "after conflict checks."
+        ),
+    )
+    for tool in tools:
+        info = (tool.meta or {}).get(META_KEY)
+        if not isinstance(info, dict):
+            continue  # not a nunchaku service tool
+        timeout = info.get("timeout_seconds", 180)
+        if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= 3600:
+            timeout = 180
+        _register(mcp, root, url, tool.name, tool.name, str(info.get("service", tool.name)),
+                  str(info.get("description", "")), timeout + 15)
     return mcp
 
 
 def serve_bridge(name: str, description: str, url: str, root: Path, timeout_seconds: int = 180) -> None:
     build_bridge(name, description, url, root, timeout_seconds).run(transport="stdio")
+
+
+def serve_gateway_bridge(url: str, root: Path) -> None:
+    _check_root(root)
+    try:
+        tools = anyio.run(discover, url)
+    except Exception as exc:
+        raise OSError(f"cannot reach gateway {url}: {exc}") from exc
+    build_gateway_bridge(url, root, tools).run(transport="stdio")

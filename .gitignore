@@ -37,3 +37,8 @@ __pycache__/
 # Editor/IDE
 # .idea/
 # .vscode/
+
+tmp/
+
+# nunchaku runtime state (service logs, generated connectors, proposed files)
+.nunchaku/

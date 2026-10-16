@@ -27,12 +27,14 @@
           <div class="metric"><div class="metric-top"><span>执行引擎</span><span class="metric-icon purple">⌘</span></div><strong id="engine-count">0</strong><small>Codex · Claude · Hermes · 自定义</small></div>
         </section>
 
+        <section class="panel gateway-panel" id="gateway-panel" aria-label="统一网关"></section>
+
         <section class="workspace-grid">
           <div class="panel service-panel"><div class="panel-heading"><div><h2>服务列表</h2><p>点击服务查看连接详情与运行日志</p></div><button class="icon-button" id="refresh" title="刷新" aria-label="刷新服务">↻</button></div><div id="service-list" class="service-list"></div></div>
           <div class="panel detail-panel" id="detail-panel"></div>
         </section>
 
-        <div class="hint"><span>✦</span><div><strong>让客户像调用本地 Skill 一样使用</strong><p>为每项服务导出公开连接包。客户只安装连接 Skill 与本地 MCP 桥接器；私有 Skill 始终留在服务端。</p></div></div>
+        <div class="hint"><span>✦</span><div><strong>让客户像调用本地 Skill 一样使用</strong><p>客户只需安装 nunchaku 并执行 <code>nunchaku install-skill</code>，再把统一网关地址配置为 MCP 服务。新增服务后客户刷新连接即可看到，无需再安装连接包。</p></div></div>
       </div>
     </main>
   </div>
