@@ -3,13 +3,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from .config import Service
+from .config import PLACEHOLDERS, Service
 
 
 MAX_FILES = 50
@@ -72,12 +73,19 @@ def _collect_files(workspace: Path) -> dict[str, str]:
     return result
 
 
-def _command(service: Service, workspace: Path, output: Path, prompt: str) -> tuple[list[str], str | None]:
+def _command(service: Service, workspace: Path, output: Path, prompt: str, skill_dir: Path) -> tuple[list[str], str | None]:
     executable = service.command or service.engine
     if service.engine == "codex":
         return [executable, "exec", "--skip-git-repo-check", "--ephemeral", "-s", "workspace-write", "-C", str(workspace), "-o", str(output), "-"], prompt
     if service.engine == "claude":
         return [executable, "-p", "--output-format", "text", "--no-session-persistence", "--permission-mode", "acceptEdits", prompt], None
+    if service.engine == "custom":
+        # Each arg is a single argv entry (no shell). Without {prompt}, the prompt goes to stdin.
+        values = {"{prompt}": prompt, "{workspace}": str(workspace), "{output}": str(output), "{skill}": str(skill_dir)}
+        pattern = re.compile("|".join(re.escape(p) for p in PLACEHOLDERS))
+        args = [pattern.sub(lambda m: values[m.group(0)], arg) for arg in service.args or ()]
+        uses_prompt = any("{prompt}" in arg for arg in service.args or ())
+        return [executable, *args], None if uses_prompt else prompt
     return [executable, "-z", prompt, "--in", str(workspace)], None
 
 
@@ -107,7 +115,7 @@ def _run_sync(service: Service, task: str, files: list[dict[str, str]]) -> dict[
             "Your final message should explain the result concisely.\n\n"
             f"User task:\n{task}"
         )
-        command, stdin = _command(service, workspace, output, prompt)
+        command, stdin = _command(service, workspace, output, prompt, skill_dir)
         try:
             completed = subprocess.run(
                 command,

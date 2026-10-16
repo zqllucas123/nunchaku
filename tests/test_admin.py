@@ -45,6 +45,14 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
                 payload["description"] = "Improved description"
                 edited = await client.put("/api/services/private-demo", json=payload)
                 self.assertEqual(edited.status_code, 200, edited.text)
+                custom = {**payload, "engine": "custom", "command": "my-agent", "args": ["--cwd", "{workspace}", "{prompt}"]}
+                switched = await client.put("/api/services/private-demo", json=custom)
+                self.assertEqual(switched.status_code, 200, switched.text)
+                self.assertEqual(switched.json()["args"], ["--cwd", "{workspace}", "{prompt}"])
+                self.assertEqual(load_services(config)[0].args, ("--cwd", "{workspace}", "{prompt}"))
+                reverted = await client.put("/api/services/private-demo", json=payload)
+                self.assertEqual(reverted.status_code, 200, reverted.text)
+                self.assertIsNone(load_services(config)[0].args)
 
                 exported = await client.get(
                     "/api/services/private-demo/connector",

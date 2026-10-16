@@ -7,6 +7,10 @@ from pathlib import Path
 
 
 SERVICE_NAME = re.compile(r"^[a-z][a-z0-9_-]{1,63}$")
+ENGINES = {"codex", "claude", "hermes", "custom"}
+# Placeholders a custom engine's args may use; replaced at run time.
+PLACEHOLDERS = ("{prompt}", "{workspace}", "{output}", "{skill}")
+MAX_ARGS = 64
 
 
 @dataclass(frozen=True)
@@ -19,6 +23,7 @@ class Service:
     port: int
     command: str | None = None
     timeout_seconds: int = 180
+    args: tuple[str, ...] | None = None
 
 
 def load_services(path: str | Path) -> list[Service]:
@@ -61,8 +66,8 @@ def parse_services(raw: object, config_path: Path) -> list[Service]:
                 raise ValueError(f"{name}: skill may not contain symlinks: {candidate}")
 
         engine = item.get("engine")
-        if engine not in {"codex", "claude", "hermes"}:
-            raise ValueError(f"{name}: engine must be codex, claude, or hermes")
+        if engine not in ENGINES:
+            raise ValueError(f"{name}: engine must be codex, claude, hermes, or custom")
         host = item.get("host", "127.0.0.1")
         port = item.get("port")
         if not isinstance(host, str) or not host:
@@ -78,6 +83,16 @@ def parse_services(raw: object, config_path: Path) -> list[Service]:
         command = item.get("command")
         if command is not None and (not isinstance(command, str) or not command.strip()):
             raise ValueError(f"{name}: command must be a binary path or name")
+        args = item.get("args")
+        if engine == "custom":
+            if command is None:
+                raise ValueError(f"{name}: custom engine requires command")
+            if (not isinstance(args, list) or len(args) > MAX_ARGS
+                    or not all(isinstance(a, str) and a and "\x00" not in a for a in args)):
+                raise ValueError(f"{name}: custom engine args must be a list of up to {MAX_ARGS} non-empty strings")
+            args = tuple(args)
+        elif args is not None:
+            raise ValueError(f"{name}: args only applies to the custom engine")
 
-        result.append(Service(name, description.strip(), skill, engine, host, port, command, timeout))
+        result.append(Service(name, description.strip(), skill, engine, host, port, command, timeout, args))
     return result

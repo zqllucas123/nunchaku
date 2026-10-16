@@ -83,7 +83,7 @@ class ServiceManager:
     def save(self, item: object, original_name: str | None = None) -> dict:
         if not isinstance(item, dict):
             raise ValueError("service must be an object")
-        allowed = {"name", "description", "skill", "engine", "host", "port", "command", "timeout_seconds"}
+        allowed = {"name", "description", "skill", "engine", "host", "port", "command", "timeout_seconds", "args"}
         if set(item) - allowed:
             raise ValueError("unknown service field")
         with self.lock:

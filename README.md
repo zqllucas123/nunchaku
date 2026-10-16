@@ -28,7 +28,7 @@ sequenceDiagram
 - **本地 MCP 桥接器**：通过 stdio MCP 接入 Codex/Claude Code。Agent 只传路径；桥接器读取文件、调用远端、核查哈希并应用结果。也可跳过桥接器，直连远端 MCP。
 - **远端 MCP 协议**：使用标准 Streamable HTTP。客户端负责 `initialize`、`tools/list`、`tools/call`；本项目不定义另一套传输协议。
 - **应用层协议**：远端 `run_skill(task, files)` 接收 `{path, content}` 列表，返回 `answer`、`changed_files` 和 `deleted_files`。改动带原文件 `base_sha256` 以检测冲突。路径以客户项目根目录为基准；文件内容为 UTF-8 文本。
-- **服务端执行**：每次调用创建临时目录，复制私有 Skill 和明确提交的文件，运行配置的 `codex`、`claude` 或 `hermes` CLI，收集文件变化，随后删除临时目录。
+- **服务端执行**：每次调用创建临时目录，复制私有 Skill 和明确提交的文件，运行配置的 `codex`、`claude`、`hermes` 或自定义 CLI，收集文件变化，随后删除临时目录。
 - **服务配置**：每个服务一个 Skill、执行引擎和端口；可运行单个服务或全部服务。每个端口都有独立的 `/mcp` 端点。
 
 ## 快速开始
@@ -126,6 +126,33 @@ Hermes 可用 `hermes mcp add nunchaku-demo-polish --url http://127.0.0.1:8765/m
 ```
 
 `skill` 也可相对配置文件所在目录。每个目录必须有 `SKILL.md`。`command` 可选，用于指定 CLI 可执行文件路径；默认使用与 `engine` 同名的命令。`serve-all` 会为每个服务启动一个子进程。`client-skill` 生成的 Skill 和实际的私有 Skill 是两份内容，部署时只给客户前者。
+
+### 自定义引擎
+
+如果不用 Codex、Claude 或 Hermes，而是用自己的 Agent CLI，把 `engine` 设为 `custom`，并提供 `command` 和 `args`：
+
+```json
+{
+  "name": "my-skill",
+  "description": "为技术文档提供语言润色和结构建议。",
+  "skill": "/srv/private-skills/my-skill",
+  "engine": "custom",
+  "command": "/usr/local/bin/my-agent",
+  "args": ["run", "--cwd", "{workspace}", "--output", "{output}", "--prompt", "{prompt}"],
+  "port": 8765
+}
+```
+
+`args` 的每一项就是一个独立的命令行参数，不经过 shell。可用的占位符有：
+
+| 占位符 | 含义 |
+| --- | --- |
+| `{prompt}` | 完整任务提示词，包含私有 Skill 的位置和用户任务 |
+| `{workspace}` | 本次调用的临时工作目录，同时也是进程的 cwd |
+| `{output}` | 最终答复文件的路径；引擎没写这个文件时，以 stdout 作为答复 |
+| `{skill}` | 私有 Skill 在工作目录里的副本（`.agents/skills/<name>`） |
+
+`args` 里没有 `{prompt}` 时，提示词通过 stdin 传入。引擎必须能非交互地运行完就退出，并直接在 `{workspace}` 里修改文件；退出码非 0 视为失败。管理台「新建服务」里选「自定义引擎」也能填写这些项，命令参数一行一个。
 
 ## `run_skill` 数据契约
 

@@ -24,7 +24,7 @@
         <section class="metrics" aria-label="服务概览">
           <div class="metric"><div class="metric-top"><span>服务总数</span><span class="metric-icon">▦</span></div><strong id="total-count">0</strong><small>已配置的 Skill 服务</small></div>
           <div class="metric"><div class="metric-top"><span>运行中</span><span class="metric-icon green">◉</span></div><strong id="running-count">0</strong><small>正在接受 MCP 请求</small></div>
-          <div class="metric"><div class="metric-top"><span>执行引擎</span><span class="metric-icon purple">⌘</span></div><strong id="engine-count">0</strong><small>Codex · Claude · Hermes</small></div>
+          <div class="metric"><div class="metric-top"><span>执行引擎</span><span class="metric-icon purple">⌘</span></div><strong id="engine-count">0</strong><small>Codex · Claude · Hermes · 自定义</small></div>
         </section>
 
         <section class="workspace-grid">
@@ -41,11 +41,12 @@
     <label class="wide">服务名称 <span>英文、小写；创建后可修改</span><input name="name" required pattern="[a-z][a-z0-9_-]{1,63}" placeholder="例如：doc-polish"></label>
     <label class="wide">功能描述 <span>帮助本地 Agent 判断何时调用</span><input name="description" required placeholder="例如：润色技术文档并给出结构建议"></label>
     <label class="wide">私有 Skill 目录 <span>服务器上的路径，须包含 SKILL.md</span><input name="skill" required placeholder="/srv/private-skills/doc-polish"></label>
-    <label>执行引擎<select name="engine"><option value="codex">Codex</option><option value="claude">Claude</option><option value="hermes">Hermes</option></select></label>
+    <label>执行引擎<select name="engine"><option value="codex">Codex</option><option value="claude">Claude</option><option value="hermes">Hermes</option><option value="custom">自定义引擎</option></select></label>
     <label>服务端口<input name="port" type="number" min="1" max="65535" required value="8765"></label>
     <label>监听地址 <span>POC 建议本机回环</span><input name="host" required value="127.0.0.1"></label>
     <label>超时时间 · 秒<input name="timeout_seconds" type="number" min="1" max="3600" required value="180"></label>
-    <label class="wide">引擎命令 <span>可选，填写 CLI 可执行文件的路径或名称</span><input name="command" placeholder="留空使用引擎默认命令"></label>
+    <label class="wide">引擎命令 <span id="command-hint">可选，填写 CLI 可执行文件的路径或名称</span><input name="command" placeholder="留空使用引擎默认命令"></label>
+    <label class="wide" id="args-field" hidden>命令参数 <span>每行一个参数，不经过 shell。可用占位符：<code>{prompt}</code> 任务提示词、<code>{workspace}</code> 临时工作目录、<code>{output}</code> 最终答复文件、<code>{skill}</code> 私有 Skill 目录。未使用 <code>{prompt}</code> 时提示词通过 stdin 传入；未写入 <code>{output}</code> 时以 stdout 作为答复。</span><textarea name="args" placeholder="run&#10;--cwd&#10;{workspace}&#10;--prompt&#10;{prompt}"></textarea></label>
   </div><div class="modal-actions"><button type="button" class="button secondary" data-close="service-dialog">取消</button><button type="submit" class="button primary">保存服务</button></div></form></dialog>
 
   <dialog id="export-dialog" class="modal"><form id="export-form"><div class="modal-head"><div><div class="eyebrow">CUSTOMER CONNECTOR</div><h2>导出公开连接包</h2></div><button type="button" class="close-button" data-close="export-dialog" aria-label="关闭">×</button></div><p class="modal-intro">压缩包只含连接说明、MCP 地址和展示信息，不含私有 Skill。</p><div class="form-grid"><label class="wide">客户可访问的 MCP URL <span>跨机器使用时填写 HTTPS 地址或客户侧 SSH 隧道地址</span><input name="url" type="url" required placeholder="https://example.com/mcp"></label><label class="wide">连接方式<select name="mode"><option value="bridge">本地桥接器 · 推荐</option><option value="direct">直接连接 MCP</option></select></label></div><div class="setup-note"><strong>客户侧安装</strong><p>解压后将目录放入本地 Skill 目录，安装 nunchaku wheel，再把 <code>nunchaku bridge</code> 配置为 stdio MCP 服务。具体命令见 README。</p></div><div class="modal-actions"><button type="button" class="button secondary" data-close="export-dialog">取消</button><button type="submit" class="button primary">下载连接包</button></div></form></dialog>

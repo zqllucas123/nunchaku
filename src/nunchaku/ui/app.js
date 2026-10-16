@@ -53,7 +53,7 @@ function renderDetail() {
   $("#detail-panel").innerHTML = `<div class="detail-body">
     <div class="detail-top"><div><div class="eyebrow">SERVICE DETAILS</div><div class="detail-title">${escapeHtml(service.name)}</div><p class="detail-desc">${escapeHtml(service.description)}</p></div><span class="state-badge ${escapeHtml(service.state)}"><i></i>${escapeHtml(statusLabel(service))}</span></div>
     <div class="detail-grid">
-      <div class="detail-field"><span>执行引擎</span><strong>${escapeHtml(service.engine)}</strong></div>
+      <div class="detail-field"><span>执行引擎</span><strong title="${escapeHtml(service.engine === "custom" ? [service.command, ...(service.args || [])].join(" ") : "")}">${escapeHtml(service.engine === "custom" ? `自定义 · ${service.command}` : service.engine)}</strong></div>
       <div class="detail-field"><span>服务端口</span><strong>${escapeHtml(service.port)}</strong></div>
       <div class="detail-field"><span>私有 Skill 目录</span><strong title="${escapeHtml(service.skill)}">${escapeHtml(service.skill)}</strong></div>
       <div class="detail-field"><span>单次超时</span><strong>${escapeHtml(service.timeout_seconds)} 秒</strong></div>
@@ -83,6 +83,16 @@ async function refresh(silent = false) {
   } catch (error) { if (!silent) toast(error.message, true); }
 }
 
+function syncEngineFields() {
+  const form = $("#service-form");
+  const custom = form.elements.namedItem("engine").value === "custom";
+  $("#args-field").hidden = !custom;
+  form.elements.namedItem("args").required = custom;
+  form.elements.namedItem("command").required = custom;
+  form.elements.namedItem("command").placeholder = custom ? "例如：/usr/local/bin/my-agent" : "留空使用引擎默认命令";
+  $("#command-hint").textContent = custom ? "必填，自定义 Agent 引擎的 CLI 可执行文件路径或名称" : "可选，填写 CLI 可执行文件的路径或名称";
+}
+
 function openService(service = null) {
   state.editing = service?.name || null;
   $("#form-title").textContent = service ? "编辑服务" : "新建服务";
@@ -90,8 +100,9 @@ function openService(service = null) {
   form.reset();
   const values = service || {host:"127.0.0.1",port:8765,engine:"codex",timeout_seconds:180};
   for (const [key, value] of Object.entries(values)) {
-    if (form.elements.namedItem(key) && value != null) form.elements.namedItem(key).value = value;
+    if (form.elements.namedItem(key) && value != null) form.elements.namedItem(key).value = Array.isArray(value) ? value.join("\n") : value;
   }
+  syncEngineFields();
   $("#service-dialog").showModal();
   form.elements.namedItem("name").focus();
 }
@@ -104,6 +115,8 @@ async function saveService(event) {
   data.port = Number(data.port);
   data.timeout_seconds = Number(data.timeout_seconds);
   if (!data.command.trim()) delete data.command;
+  if (data.engine === "custom") data.args = data.args.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+  else delete data.args;
   state.busy = true;
   try {
     const isEdit = Boolean(state.editing);
@@ -174,6 +187,7 @@ async function exportConnector(event) {
 $("#add-service").addEventListener("click", () => openService());
 $("#refresh").addEventListener("click", () => refresh());
 $("#service-form").addEventListener("submit", saveService);
+$("#service-form").elements.namedItem("engine").addEventListener("change", syncEngineFields);
 $("#export-form").addEventListener("submit", exportConnector);
 document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => $(`#${button.dataset.close}`).close()));
 $("#service-list").addEventListener("click", (event) => { const row = event.target.closest("[data-select]"); if (row) { state.selected = row.dataset.select; render(); } });

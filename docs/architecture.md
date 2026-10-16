@@ -14,7 +14,7 @@
 | 本地 MCP 桥接器 | 客户机器 | 读取指定文件、远端通信、哈希冲突检查、落盘 | 通用代码与连接配置 |
 | 远端 MCP 服务 | 提供方服务器 | 提供工具定义，验证输入，启动执行 | 工具名称、描述、输入输出 Schema |
 | 私有 Skill | 提供方服务器 | 真实方法论、脚本、参考材料 | 不作为文件分发 |
-| 执行引擎 | 提供方服务器 | Codex、Claude Code 或 Hermes CLI | 引擎名称可见 |
+| 执行引擎 | 提供方服务器 | Codex、Claude Code、Hermes 或自定义 Agent CLI | 引擎名称可见 |
 | 可视化管理台 | 提供方服务器本机 | 编辑服务配置、管理服务进程、查看日志、导出公开连接包 | 客户不可访问 |
 
 每个服务配置为 `{name, description, skill, engine, host, port, timeout_seconds}`，单独监听一个端口。服务端不会把 Skill 文件通过 MCP resource 或 tool 返回。

@@ -32,6 +32,26 @@ class ConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "duplicate host/port"):
                 load_services(config)
 
+    def test_custom_engine_requires_command_and_args(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "private").mkdir()
+            (root / "private" / "SKILL.md").write_text("x")
+            config = root / "services.json"
+            entry = {"name": "mine", "description": "Mine", "skill": "private", "engine": "custom", "port": 8765}
+            for extra, error in [({"args": ["{prompt}"]}, "requires command"),
+                                 ({"command": "my-agent"}, "args must be"),
+                                 ({"command": "my-agent", "args": [""]}, "args must be")]:
+                with self.subTest(extra=extra):
+                    config.write_text(json.dumps({"services": [{**entry, **extra}]}))
+                    with self.assertRaisesRegex(ValueError, error):
+                        load_services(config)
+            config.write_text(json.dumps({"services": [{**entry, "engine": "codex", "args": ["x"]}]}))
+            with self.assertRaisesRegex(ValueError, "only applies"):
+                load_services(config)
+            config.write_text(json.dumps({"services": [{**entry, "command": "my-agent", "args": ["--cwd", "{workspace}"]}]}))
+            self.assertEqual(load_services(config)[0].args, ("--cwd", "{workspace}"))
+
 
 class RunnerTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -87,6 +107,40 @@ class RunnerTests(unittest.TestCase):
             with self.assertRaises(RuntimeError) as caught:
                 _run_sync(self.service, "task", [])
         self.assertNotIn("secret internal instructions", str(caught.exception))
+
+    def test_custom_engine_substitutes_placeholders(self) -> None:
+        service = Service("private", "do a task", self.service.skill, "custom", "127.0.0.1", 8765,
+                          "my-agent", args=("run", "--cwd={workspace}", "-o", "{output}", "--skill", "{skill}", "{prompt}"))
+        calls = []
+
+        def fake_run(command, **kwargs):
+            calls.append((command, kwargs["input"]))
+            workspace = Path(kwargs["cwd"])
+            self.assertEqual(command[2], f"--cwd={workspace}")
+            self.assertTrue((Path(command[6]) / "SKILL.md").is_file())
+            Path(command[4]).write_text("custom answer")
+            return type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+        with patch("nunchaku.runner.subprocess.run", side_effect=fake_run):
+            result = _run_sync(service, "literal {workspace} stays", [])
+        command, stdin = calls[0]
+        self.assertEqual(command[:2], ["my-agent", "run"])
+        self.assertIn("literal {workspace} stays", command[-1])
+        self.assertIsNone(stdin)
+        self.assertEqual(result["answer"], "custom answer")
+        self.assertEqual(result["engine"], "custom")
+
+    def test_custom_engine_without_prompt_placeholder_uses_stdin(self) -> None:
+        service = Service("private", "do a task", self.service.skill, "custom", "127.0.0.1", 8765,
+                          "my-agent", args=("--stdin",))
+
+        def fake_run(command, **kwargs):
+            self.assertEqual(command, ["my-agent", "--stdin"])
+            self.assertIn("User task:\ntask", kwargs["input"])
+            return type("Result", (), {"returncode": 0, "stdout": "from stdout\n", "stderr": ""})()
+
+        with patch("nunchaku.runner.subprocess.run", side_effect=fake_run):
+            self.assertEqual(_run_sync(service, "task", [])["answer"], "from stdout")
 
 
 class BridgeTests(unittest.TestCase):
