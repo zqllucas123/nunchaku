@@ -27,6 +27,12 @@ go.work.sum
 
 # env file
 .env
+.venv/
+dist/
+services.json
+__pycache__/
+*.pyc
+.pytest_cache/
 
 # Editor/IDE
 # .idea/

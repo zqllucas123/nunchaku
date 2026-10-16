@@ -1,0 +1,13 @@
+{
+  "services": [
+    {
+      "name": "demo-polish",
+      "description": "润色中文技术文档，保持原意并改善结构和可读性。",
+      "skill": "examples/private-polish",
+      "engine": "codex",
+      "host": "127.0.0.1",
+      "port": 8765,
+      "timeout_seconds": 180
+    }
+  ]
+}

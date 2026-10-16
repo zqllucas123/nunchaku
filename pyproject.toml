@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nunchaku"
+version = "0.1.0"
+description = "Run private Agent Skills behind an MCP service"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["mcp>=1.26,<2", "pydantic>=2,<3", "httpx>=0.27,<1", "starlette>=0.40,<2", "uvicorn>=0.30,<1"]
+
+[project.scripts]
+nunchaku = "nunchaku.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nunchaku"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/src", "/README.md", "/pyproject.toml", "/LICENSE"]
