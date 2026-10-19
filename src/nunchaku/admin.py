@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import os
@@ -14,19 +15,27 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict
 from importlib.resources import files
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import uvicorn
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
-from .config import Service, load_gateway, load_services, parse_services
+from .auth import SESSION_TTL_SECONDS, AuthStore, auth_path
+from .config import Service, load_dashboard, load_gateway, load_services, parse_services
 
 # Service names start with a letter, so this log file can't collide with one.
 GATEWAY_LOG = "_gateway"
+SESSION_COOKIE = "nunchaku_session"
+ASSETS = {"index.html": "text/html", "style.css": "text/css", "app.js": "text/javascript",
+          "login.js": "text/javascript"}
+# Served without a session so the login page can render.
+PUBLIC_ASSETS = {"style.css", "login.js"}
 
 
 def _entry(service: Service) -> dict:
@@ -35,8 +44,25 @@ def _entry(service: Service) -> dict:
     return result
 
 
+def _listening(host: str, port: int) -> bool:
+    """Something already serves this port, e.g. a systemd-managed process."""
+    host = "127.0.0.1" if host in {"0.0.0.0", "::", ""} else host
+    try:
+        with socket.create_connection((host, port), timeout=0.2):
+            return True
+    except OSError:
+        return False
+
+
+def _wait_closed(host: str, port: int, timeout: float = 3.0) -> None:
+    """The OS can keep accepting briefly after the process exits; don't report it as external."""
+    deadline = time.monotonic() + timeout
+    while _listening(host, port) and time.monotonic() < deadline:
+        time.sleep(0.1)
+
+
 class ServiceManager:
-    def __init__(self, config_path: str | Path):
+    def __init__(self, config_path: str | Path, store: AuthStore | None = None):
         self.path = Path(config_path).expanduser().resolve()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self.path.exists():
@@ -46,13 +72,16 @@ class ServiceManager:
         self.gateway_process: subprocess.Popen | None = None
         self.lock = threading.RLock()
         self.logs_dir = self.path.parent / ".nunchaku" / "logs"
+        self.store = store or AuthStore(auth_path(self.path))
 
     def _write(self, services: list[Service]) -> None:
         document: dict = {"services": [_entry(s) for s in services]}
         if self.path.exists():
             current = json.loads(self.path.read_text(encoding="utf-8"))
-            if isinstance(current, dict) and "gateway" in current:
-                document["gateway"] = current["gateway"]
+            if isinstance(current, dict):
+                for section in ("gateway", "dashboard"):
+                    if section in current:
+                        document[section] = current[section]
         payload = json.dumps(document, ensure_ascii=False, indent=2) + "\n"
         descriptor, name = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.path.parent)
         try:
@@ -83,6 +112,8 @@ class ServiceManager:
             result = []
             for service in self.services:
                 state, exit_code = self._state(service.name)
+                if state == "stopped" and _listening(service.host, service.port):
+                    state = "external"
                 entry = _entry(service)
                 entry.update(state=state, exit_code=exit_code,
                              endpoint=f"http://{service.host}:{service.port}/mcp")
@@ -112,6 +143,8 @@ class ServiceManager:
             self.services = validated
             if original_name and original_name != item.get("name"):
                 self.processes.pop(original_name, None)
+                # Grants are stored by name, so carry them over to the new name.
+                self.store.rename_service(original_name, item["name"])
             return next(entry for entry in self.list() if entry["name"] == item["name"])
 
     def delete(self, name: str) -> None:
@@ -122,6 +155,7 @@ class ServiceManager:
             updated = [s for s in self.services if s.name != name]
             self._write(updated)
             self.services = updated
+            self.store.remove_service(name)
             self.processes.pop(name, None)
 
     def start(self, name: str) -> dict:
@@ -169,8 +203,11 @@ class ServiceManager:
             code = None if process is None else process.poll()
             state = "stopped" if process is None else ("running" if code is None else "exited")
             host = "127.0.0.1" if settings.host in {"0.0.0.0", "::"} else settings.host
+            if state == "stopped" and _listening(host, settings.port):
+                state = "external"
             return {"host": settings.host, "port": settings.port, "state": state, "exit_code": code,
-                    "endpoint": f"http://{host}:{settings.port}/mcp"}
+                    "endpoint": f"http://{host}:{settings.port}/mcp", "auth": settings.auth,
+                    "public_endpoint": load_dashboard(self.path).public_gateway_url}
 
     def start_gateway(self) -> dict:
         with self.lock:
@@ -185,6 +222,8 @@ class ServiceManager:
         with self.lock:
             if self.gateway_process is not None:
                 self._terminate(self.gateway_process)
+                settings = load_gateway(self.path)
+                _wait_closed(settings.host, settings.port)
             self.gateway_process = None
             return self.gateway()
 
@@ -200,10 +239,11 @@ class ServiceManager:
 
     def stop(self, name: str) -> dict:
         with self.lock:
-            self._find(name)
+            service = self._find(name)
             process = self.processes.get(name)
             if process:
                 self._terminate(process)
+                _wait_closed(service.host, service.port)
             self.processes.pop(name, None)
             return next(x for x in self.list() if x["name"] == name)
 
@@ -225,8 +265,12 @@ class ServiceManager:
             self.stop(name)
 
 
-def create_app(config_path: str | Path) -> Starlette:
-    manager = ServiceManager(config_path)
+def create_app(config_path: str | Path, store: AuthStore | None = None) -> Starlette:
+    manager = ServiceManager(config_path, store)
+    store = manager.store
+    settings = load_dashboard(config_path)
+    allowed_hosts = ["127.0.0.1", "localhost", *settings.allowed_hosts]
+    host_names = {h.rsplit(":", 1)[0] if h.count(":") == 1 else h for h in allowed_hosts}
 
     @asynccontextmanager
     async def lifespan(_app):
@@ -237,7 +281,8 @@ def create_app(config_path: str | Path) -> Starlette:
         if request.headers.get("content-type", "").split(";")[0].strip() != "application/json":
             raise ValueError("Content-Type must be application/json")
         origin = request.headers.get("origin")
-        if origin and origin != str(request.base_url).rstrip("/"):
+        # Behind a proxy request.base_url is the internal address, so compare hosts, not full origins.
+        if origin and urlsplit(origin).hostname not in host_names:
             raise PermissionError("cross-origin request rejected")
 
     async def body(request: Request) -> object:
@@ -245,6 +290,76 @@ def create_app(config_path: str | Path) -> Starlette:
         if int(request.headers.get("content-length", "0")) > 65536:
             raise ValueError("request is too large")
         return await request.json()
+
+    def admin_of(request: Request) -> str | None:
+        return store.session_admin(request.cookies.get(SESSION_COOKIE))
+
+    def session_response(payload: dict, token: str | None) -> JSONResponse:
+        response = JSONResponse(payload)
+        if token is None:
+            response.delete_cookie(SESSION_COOKIE, path="/")
+        else:
+            response.set_cookie(SESSION_COOKIE, token, max_age=SESSION_TTL_SECONDS, path="/", httponly=True,
+                                samesite="strict", secure=settings.secure_cookies)
+        return response
+
+    async def session_api(request: Request) -> Response:
+        action = request.path_params.get("action")
+        try:
+            if request.method == "GET":
+                return JSONResponse({"admin": admin_of(request), "setup_required": not store.has_admins()})
+            item = await body(request)
+            if not isinstance(item, dict):
+                raise ValueError("expected an object")
+            if action == "login":
+                name, password = item.get("name"), item.get("password")
+                if not isinstance(name, str) or not isinstance(password, str):
+                    raise ValueError("name and password are required")
+                token = await asyncio.to_thread(store.login, name.strip(), password)
+                return session_response({"admin": name.strip()}, token)
+            if action == "logout":
+                store.logout(request.cookies.get(SESSION_COOKIE))
+                return session_response({"admin": None}, None)
+            if action == "password":
+                admin = admin_of(request)
+                if admin is None:
+                    return JSONResponse({"error": "login required"}, status_code=401)
+                current, new = item.get("current"), item.get("new")
+                if not isinstance(current, str) or not isinstance(new, str):
+                    raise ValueError("current and new passwords are required")
+                await asyncio.to_thread(store.change_password, admin, current, new)
+                # Changing the password ends every session, including this one; issue a fresh one.
+                token = await asyncio.to_thread(store.login, admin, new)
+                return session_response({"admin": admin}, token)
+            return JSONResponse({"error": "unsupported operation"}, status_code=405)
+        except PermissionError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=401 if action == "login" else 403)
+        except (ValueError, KeyError, json.JSONDecodeError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+
+    async def keys_api(request: Request) -> Response:
+        key_id = request.path_params.get("key_id")
+        known = {service.name for service in manager.services}
+        try:
+            if request.method == "GET":
+                return JSONResponse({"keys": [key.public() for key in store.keys()]})
+            if request.method == "POST" and key_id is None:
+                secret, key = store.create_key(await body(request), request.state.admin, known)
+                # The only time the plaintext key leaves the server.
+                return JSONResponse({"key": key.public(), "secret": secret}, status_code=201)
+            if request.method == "PUT" and key_id:
+                return JSONResponse(store.update_key(key_id, await body(request), known).public())
+            if request.method == "DELETE" and key_id:
+                check_write(request)
+                store.delete_key(key_id)
+                return Response(status_code=204)
+            return JSONResponse({"error": "unsupported operation"}, status_code=405)
+        except KeyError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=404)
+        except PermissionError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=403)
+        except (ValueError, json.JSONDecodeError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
 
     async def api(request: Request) -> Response:
         name = request.path_params.get("name")
@@ -330,24 +445,54 @@ def create_app(config_path: str | Path) -> Starlette:
 
     async def asset(request: Request) -> Response:
         name = request.path_params.get("asset", "index.html")
-        if name not in {"index.html", "style.css", "app.js"}:
+        if name not in ASSETS:
             return Response(status_code=404)
-        media = {"index.html": "text/html", "style.css": "text/css", "app.js": "text/javascript"}[name]
         content = files("nunchaku").joinpath("ui", name).read_bytes()
-        return Response(content, media_type=media, headers={"Cache-Control": "no-store"})
+        return Response(content, media_type=ASSETS[name], headers={"Cache-Control": "no-store"})
+
+    async def require_admin(request: Request, call_next):
+        """Everything except the login page, its assets, and /api/session needs a session."""
+        path = request.url.path
+        public = path in {"/login", "/api/session", "/api/session/login"} or (
+            path.startswith("/assets/") and path.rsplit("/", 1)[-1] in PUBLIC_ASSETS)
+        if public:
+            return await call_next(request)
+        admin = await asyncio.to_thread(admin_of, request)
+        if admin is None:
+            if path.startswith("/api/"):
+                return JSONResponse({"error": "login required"}, status_code=401)
+            return RedirectResponse("/login", status_code=303)
+        request.state.admin = admin
+        return await call_next(request)
+
+    async def login_page(request: Request) -> Response:
+        content = files("nunchaku").joinpath("ui", "login.html").read_bytes()
+        return Response(content, media_type="text/html", headers={"Cache-Control": "no-store"})
 
     return Starlette(routes=[
-        Route("/", asset), Route("/assets/{asset}", asset),
+        Route("/", asset), Route("/assets/{asset}", asset), Route("/login", login_page),
+        Route("/api/session", session_api, methods=["GET"]),
+        Route("/api/session/{action}", session_api, methods=["POST"]),
+        Route("/api/keys", keys_api, methods=["GET", "POST"]),
+        Route("/api/keys/{key_id}", keys_api, methods=["PUT", "DELETE"]),
         Route("/api/services", api, methods=["GET", "POST"]),
         Route("/api/gateway", gateway_api, methods=["GET"]),
         Route("/api/gateway/{action}", gateway_api, methods=["GET", "POST"]),
         Route("/api/services/{name}/connector", connector, methods=["GET"]),
         Route("/api/services/{name}/{action}", api, methods=["GET", "POST"]),
         Route("/api/services/{name}", api, methods=["PUT", "DELETE"]),
-    ], lifespan=lifespan, middleware=[Middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])])
+    ], lifespan=lifespan, middleware=[
+        Middleware(TrustedHostMiddleware, allowed_hosts=sorted(host_names)),
+        Middleware(BaseHTTPMiddleware, dispatch=require_admin),
+    ])
 
 
-def serve_dashboard(config_path: str | Path, port: int) -> None:
+def serve_dashboard(config_path: str | Path, port: int, host: str = "127.0.0.1") -> None:
     if not 1 <= port <= 65535:
         raise ValueError("dashboard port must be 1..65535")
-    uvicorn.run(create_app(config_path), host="127.0.0.1", port=port, log_level="warning")
+    store = AuthStore(auth_path(config_path))
+    if not store.has_admins():
+        print("nunchaku: no admin account yet. Create one first:\n"
+              f"  nunchaku --config {config_path} admin add <name>", file=sys.stderr)
+    uvicorn.run(create_app(config_path, store), host=host, port=port, log_level="warning",
+                proxy_headers=False)

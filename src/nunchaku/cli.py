@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import multiprocessing
 import os
@@ -96,6 +97,38 @@ def _validate_url(value: str) -> str:
     return value
 
 
+def _read_password() -> str:
+    """Prompt twice without echo; fall back to one stdin line when not a terminal (scripts)."""
+    if not sys.stdin.isatty():
+        line = sys.stdin.readline()
+        if not line:
+            raise ValueError("no password on stdin")
+        return line.rstrip("\r\n")
+    first = getpass.getpass("Password: ")
+    if first != getpass.getpass("Repeat password: "):
+        raise ValueError("passwords do not match")
+    return first
+
+
+def _admin(args: argparse.Namespace) -> int:
+    from .auth import AuthStore, auth_path
+    store = AuthStore(auth_path(args.config))
+    if args.admin_action == "list":
+        for admin in store.admins():
+            print(f"{admin['name']}{'  (locked)' if admin['locked'] else ''}")
+        return 0
+    if args.admin_action == "add":
+        store.set_admin(args.name, _read_password(), create=True)
+        print(f"Admin {args.name} created.")
+    elif args.admin_action == "passwd":
+        store.set_admin(args.name, _read_password(), create=False)
+        print(f"Password for {args.name} updated; their sessions were signed out.")
+    else:
+        store.remove_admin(args.name)
+        print(f"Admin {args.name} removed.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="nunchaku")
     parser.add_argument("--config", default="services.json", help="service configuration JSON")
@@ -107,8 +140,17 @@ def main(argv: list[str] | None = None) -> int:
     single.add_argument("service")
     commands.add_parser("serve-all", help="serve every configured endpoint")
     commands.add_parser("gateway", help="serve one public MCP endpoint that routes to every service")
-    dashboard = commands.add_parser("dashboard", help="open the local service management UI")
-    dashboard.add_argument("--port", type=int, default=8787, help="local dashboard port (default: 8787)")
+    dashboard = commands.add_parser("dashboard", help="open the service management UI (admin login required)")
+    dashboard.add_argument("--port", type=int, default=8787, help="dashboard port (default: 8787)")
+    dashboard.add_argument("--host", default="127.0.0.1",
+                           help="listen address (default 127.0.0.1; put a TLS proxy in front to expose it)")
+    admin = commands.add_parser("admin", help="manage dashboard admin accounts")
+    admin_actions = admin.add_subparsers(dest="admin_action", required=True)
+    admin_actions.add_parser("list", help="list admin accounts")
+    for verb, text in (("add", "create an admin (prompts for the password)"),
+                       ("passwd", "reset an admin's password (prompts)"),
+                       ("remove", "delete an admin account")):
+        admin_actions.add_parser(verb, help=text).add_argument("name")
     client = commands.add_parser("client-skill", help="generate a public local connector Skill")
     client.add_argument("service")
     client.add_argument("--url", required=True, help="customer-visible MCP URL")
@@ -130,9 +172,11 @@ def main(argv: list[str] | None = None) -> int:
         configure(args.log_level)
         if args.action == "dashboard":
             from .admin import serve_dashboard
-            print(f"Dashboard: http://127.0.0.1:{args.port}/", flush=True)
-            serve_dashboard(args.config, args.port)
+            print(f"Dashboard: http://{args.host}:{args.port}/", flush=True)
+            serve_dashboard(args.config, args.port, args.host)
             return 0
+        if args.action == "admin":
+            return _admin(args)
         if args.action == "install-skill":
             from .skills import candidates, choose, install, registration_hint
             if args.path:
@@ -149,8 +193,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.action == "bridge" and args.url:
             from .bridge import serve_gateway_bridge
-            # Read from the environment so the token stays out of process listings.
-            token = os.environ.get("NUNCHAKU_TOKEN", "").strip() or None
+            # Read from the environment so the key stays out of process listings.
+            token = (os.environ.get("NUNCHAKU_SERVICE_KEY", "").strip()
+                     or os.environ.get("NUNCHAKU_TOKEN", "").strip() or None)
             serve_gateway_bridge(_validate_url(args.url), Path(args.root), token)
             return 0
         if args.action == "bridge":
@@ -207,7 +252,7 @@ def main(argv: list[str] | None = None) -> int:
             for process in processes:
                 process.join()
         return 0 if all(process.exitcode == 0 for process in processes) else 1
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, KeyError) as exc:
         print(f"nunchaku: {exc}", file=sys.stderr)
         return 2
 

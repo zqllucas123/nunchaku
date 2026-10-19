@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>登录 · Nunchaku</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <script src="/assets/login.js" defer></script>
+</head>
+<body class="login-body">
+  <main class="login-card">
+    <div class="brand login-brand"><span class="brand-mark">N</span><div><strong>nunchaku</strong><small>SKILL SERVICE BASE</small></div></div>
+    <h1>管理员登录</h1>
+    <p class="login-intro">仅限管理员。员工使用服务请向管理员申请 Service Key。</p>
+    <form id="login-form" novalidate>
+      <label>用户名<input name="name" autocomplete="username" required autofocus></label>
+      <label>密码<input name="password" type="password" autocomplete="current-password" required></label>
+      <p class="login-error" id="login-error" role="alert" hidden></p>
+      <button type="submit" class="button primary login-submit">登录</button>
+    </form>
+    <div class="setup-note" id="setup-note" hidden><strong>还没有管理员账号</strong><p>请在服务器上执行：<code>nunchaku --config services.json admin add &lt;用户名&gt;</code></p></div>
+  </main>
+</body>
+</html>

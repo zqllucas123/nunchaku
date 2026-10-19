@@ -12,8 +12,9 @@
     <aside class="sidebar">
       <div class="brand"><span class="brand-mark">N</span><div><strong>nunchaku</strong><small>SKILL SERVICE BASE</small></div></div>
       <div class="sidebar-section">工作区</div>
-      <a class="nav-link active" href="#services"><span class="nav-icon">▦</span>服务管理</a>
-      <div class="sidebar-bottom"><span class="status-dot"></span> 管理台仅在本机开放 <small>127.0.0.1</small></div>
+      <a class="nav-link active" href="#services" data-view="services"><span class="nav-icon">▦</span>服务管理</a>
+      <a class="nav-link" href="#keys" data-view="keys"><span class="nav-icon">⚿</span>Service Key</a>
+      <div class="sidebar-bottom"><span class="status-dot"></span> 已登录 <strong id="admin-name"></strong><small><button class="link-button" id="change-password">修改密码</button> · <button class="link-button" id="logout">退出登录</button></small></div>
     </aside>
 
     <main class="main" id="services">
@@ -37,6 +38,14 @@
         <div class="hint"><span>✦</span><div><strong>让客户像调用本地 Skill 一样使用</strong><p>客户只需安装 nunchaku 并执行 <code>nunchaku install-skill</code>，再把统一网关地址配置为 MCP 服务。新增服务后客户刷新连接即可看到，无需再安装连接包。</p></div></div>
       </div>
     </main>
+
+    <main class="main" id="keys" hidden>
+      <header class="topbar"><div class="breadcrumb">工作区 <span>/</span> Service Key</div><div class="topbar-right"><span class="env-pill">POC 环境</span><span class="avatar">N</span></div></header>
+      <div class="content">
+        <div class="page-heading"><div><div class="eyebrow">ACCESS CONTROL</div><h1>Service Key</h1><p>为使用者生成访问凭证，并限定可访问的服务。停用、修改权限立即生效。</p></div><button class="button primary" id="add-key"><span>＋</span> 生成 Service Key</button></div>
+        <section class="panel key-panel"><div class="panel-heading"><div><h2>Key 列表</h2><p>Key 只在生成时显示一次；服务端只保存其哈希</p></div><button class="icon-button" id="refresh-keys" title="刷新" aria-label="刷新">↻</button></div><div id="key-list" class="key-list"></div></section>
+      </div>
+    </main>
   </div>
 
   <dialog id="service-dialog" class="modal"><form id="service-form" novalidate><div class="modal-head"><div><div class="eyebrow">SERVICE CONFIGURATION</div><h2 id="form-title">新建服务</h2></div><button type="button" class="close-button" data-close="service-dialog" aria-label="关闭">×</button></div><div class="form-grid">
@@ -52,6 +61,30 @@
   </div><div class="modal-actions"><button type="button" class="button secondary" data-close="service-dialog">取消</button><button type="submit" class="button primary">保存服务</button></div></form></dialog>
 
   <dialog id="export-dialog" class="modal"><form id="export-form"><div class="modal-head"><div><div class="eyebrow">CUSTOMER CONNECTOR</div><h2>导出公开连接包</h2></div><button type="button" class="close-button" data-close="export-dialog" aria-label="关闭">×</button></div><p class="modal-intro">压缩包只含连接说明、MCP 地址和展示信息，不含私有 Skill。</p><div class="form-grid"><label class="wide">客户可访问的 MCP URL <span>跨机器使用时填写 HTTPS 地址或客户侧 SSH 隧道地址</span><input name="url" type="url" required placeholder="https://example.com/mcp"></label><label class="wide">连接方式<select name="mode"><option value="bridge">本地桥接器 · 推荐</option><option value="direct">直接连接 MCP</option></select></label></div><div class="setup-note"><strong>客户侧安装</strong><p>解压后将目录放入本地 Skill 目录，安装 nunchaku wheel，再把 <code>nunchaku bridge</code> 配置为 stdio MCP 服务。具体命令见 README。</p></div><div class="modal-actions"><button type="button" class="button secondary" data-close="export-dialog">取消</button><button type="submit" class="button primary">下载连接包</button></div></form></dialog>
+
+  <dialog id="key-dialog" class="modal"><form id="key-form" novalidate><div class="modal-head"><div><div class="eyebrow">SERVICE KEY</div><h2 id="key-form-title">生成 Service Key</h2></div><button type="button" class="close-button" data-close="key-dialog" aria-label="关闭">×</button></div><div class="form-grid">
+    <label>使用者 <span>必填</span><input name="owner" required maxlength="100" placeholder="例如：张三"></label>
+    <label>部门<input name="department" maxlength="100" placeholder="例如：研发一部"></label>
+    <label class="wide">邮箱<input name="email" type="email" maxlength="200" placeholder="zhangsan@example.com"></label>
+    <label class="wide">备注<input name="note" maxlength="500" placeholder="用途、申请单号等"></label>
+    <fieldset class="wide grant-field"><legend>可访问的服务</legend>
+      <label class="check"><input type="checkbox" name="all_services"> 全部服务（包括以后新增的）</label>
+      <div id="grant-services" class="grant-list"></div>
+    </fieldset>
+    <label class="wide">过期时间 <span>留空表示永不过期</span><input name="expires_at" type="date"></label>
+  </div><div class="modal-actions"><button type="button" class="button secondary" data-close="key-dialog">取消</button><button type="submit" class="button primary" id="key-submit">生成</button></div></form></dialog>
+
+  <dialog id="secret-dialog" class="modal"><div class="modal-head"><div><div class="eyebrow">SERVICE KEY CREATED</div><h2>请立即复制并妥善保存</h2></div></div>
+    <p class="modal-intro">这是唯一一次显示完整 Key。关闭后无法再查看，丢失只能重新生成。</p>
+    <div class="endpoint-box secret-box"><code id="secret-value"></code><button class="text-button" id="copy-secret">复制</button></div>
+    <div class="setup-note"><strong>交给使用者的 AIKO MCP 配置</strong><pre id="secret-config" class="config-sample"></pre></div>
+    <div class="modal-actions"><button type="button" class="button primary" data-close="secret-dialog">我已保存</button></div></dialog>
+
+  <dialog id="password-dialog" class="modal"><form id="password-form" novalidate><div class="modal-head"><div><div class="eyebrow">ACCOUNT</div><h2>修改密码</h2></div><button type="button" class="close-button" data-close="password-dialog" aria-label="关闭">×</button></div><div class="form-grid">
+    <label class="wide">当前密码<input name="current" type="password" autocomplete="current-password" required></label>
+    <label class="wide">新密码 <span>至少 8 位</span><input name="new" type="password" autocomplete="new-password" minlength="8" required></label>
+    <label class="wide">确认新密码<input name="repeat" type="password" autocomplete="new-password" minlength="8" required></label>
+  </div><div class="modal-actions"><button type="button" class="button secondary" data-close="password-dialog">取消</button><button type="submit" class="button primary">保存</button></div></form></dialog>
 
   <div id="toast" role="status" aria-live="polite"></div>
 </body>

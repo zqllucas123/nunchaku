@@ -11,6 +11,7 @@ from pathlib import Path
 import httpx
 
 from nunchaku.admin import create_app
+from nunchaku.auth import AuthStore, auth_path
 from nunchaku.config import load_services
 
 
@@ -26,8 +27,11 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
                 port = probe.getsockname()[1]
             config = root / "services.json"
             app = create_app(config)
+            AuthStore(auth_path(config)).set_admin("root", "correct-horse", create=True)
             transport = httpx.ASGITransport(app=app)
             async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8787") as client:
+                login = await client.post("/api/session/login", json={"name": "root", "password": "correct-horse"})
+                self.assertEqual(login.status_code, 200, login.text)
                 empty = await client.get("/api/services")
                 self.assertEqual(empty.json(), {"services": []})
                 self.assertEqual((await client.get("/")).status_code, 200)

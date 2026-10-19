@@ -59,13 +59,15 @@ nunchaku install-skill --path "$HOME/.sdw/skills" --url http://127.0.0.1:8750/mc
 
 **MCP 服务器名请用 `nunchaku`。** 连接 Skill 里就是这样称呼它的。
 
+访问网关需要 **Service Key**（形如 `nk_…`），由管理员在管理台为你生成，并决定你能使用哪些服务。把它放在 MCP 配置的环境变量 `NUNCHAKU_SERVICE_KEY` 里，不要写进命令行参数。Key 等同于个人账号，不要转借；怀疑泄露时请管理员停用后重新生成。
+
 推荐用**桥接模式**：本地运行 `nunchaku bridge`，作为 STDIO 服务器。
 
 ```
 nunchaku.exe bridge --url <网关地址> --root <项目目录>
 ```
 
-桥接器启动时向网关拉取工具列表，在本地为每个服务注册一个同名工具。Agent 调用时只需给相对路径，由桥接器读取文件、发送、核对哈希并写回。二进制文件（如 .docx）也由它自动处理。
+桥接器启动时向网关拉取工具列表，在本地为每个服务注册一个同名工具。你只会看到 Key 被授权的服务。Agent 调用时只需给相对路径，由桥接器读取文件、发送、核对哈希并写回。二进制文件（如 .docx）也由它自动处理。
 
 ### AIKO
 
@@ -77,11 +79,13 @@ nunchaku.exe bridge --url <网关地址> --root <项目目录>
   "args": [
     "bridge",
     "--url",
-    "http://127.0.0.1:8750/mcp",
+    "https://nunchaku.corp.example.com/mcp",
     "--root",
     "D:\\works\\your-project"
   ],
-  "env": {}
+  "env": {
+    "NUNCHAKU_SERVICE_KEY": "nk_xxxxxxxxxxxxxxxx"
+  }
 }
 ```
 
@@ -92,8 +96,8 @@ nunchaku.exe bridge --url <网关地址> --root <项目目录>
 ### Claude Code
 
 ```powershell
-claude mcp add --scope user nunchaku -- C:\Users\sdw\.local\bin\nunchaku.exe bridge `
-  --url http://127.0.0.1:8750/mcp --root "D:\works\your-project"
+claude mcp add --scope user -e NUNCHAKU_SERVICE_KEY=nk_xxxxxxxx nunchaku -- C:\Users\sdw\.local\bin\nunchaku.exe bridge `
+  --url https://nunchaku.corp.example.com/mcp --root "D:\works\your-project"
 claude mcp list
 ```
 
@@ -109,10 +113,10 @@ claude
 ### Codex
 
 ```bash
-codex mcp add nunchaku -- nunchaku bridge --url http://127.0.0.1:8750/mcp --root /absolute/path/to/project
+NUNCHAKU_SERVICE_KEY=nk_xxxxxxxx codex mcp add nunchaku -- nunchaku bridge --url https://nunchaku.corp.example.com/mcp --root /absolute/path/to/project
 ```
 
-确认信任该服务后，可以在 `~/.codex/config.toml` 中加入以下配置：
+Key 也可以写进 `~/.codex/config.toml` 的 `[mcp_servers.nunchaku.env]`。确认信任该服务后，可以加入以下配置：
 
 ```toml
 [mcp_servers.nunchaku]
@@ -125,8 +129,8 @@ tool_timeout_sec = 210
 
 网关本身就是标准的 Streamable HTTP MCP 端点，任何支持 HTTP 类型的客户端都可以直接连接：
 
-- AIKO：类型选 **HTTP**，URL 填网关地址。
-- Claude Code：`claude mcp add --transport http nunchaku http://127.0.0.1:8750/mcp`
+- AIKO：类型选 **HTTP**，URL 填网关地址，请求头加 `Authorization: Bearer <Service Key>`。
+- Claude Code：`claude mcp add --transport http nunchaku https://nunchaku.corp.example.com/mcp --header "Authorization: Bearer nk_xxxxxxxx"`
 
 直连时没有 `--root`，也就没有路径边界，而且 Agent 必须自己传文件内容、自己写回结果。`.docx` 这类二进制文件需要 Agent 自行做 base64 编解码，出错概率明显高于桥接模式，也没有冲突检测。**一般情况请用桥接模式。**
 
@@ -209,6 +213,12 @@ Agent 会根据工具描述自动选择服务，直接说需求即可：
 **`cannot reach gateway http://...`**
 桥接器启动时连不上网关。请确认网关已启动、地址和端口正确，以及本机能访问该地址。
 
+**`cannot reach gateway ...: 401 Unauthorized: check NUNCHAKU_TOKEN`**
+Service Key 缺失、写错、已停用或已过期。检查 MCP 配置 `env` 里的 `NUNCHAKU_SERVICE_KEY`，仍不行请联系管理员。（旧的变量名 `NUNCHAKU_TOKEN` 也仍然有效。）
+
+**`this service key may not use xxx`**
+你的 Key 没有被授权使用这个服务，请向管理员申请。
+
 **`MCP error -32000: Connection closed`，stderr 中是 `project root is not a directory: D:\...`**
 `--root` 指向的目录不存在，常见原因是把示例里的占位路径原样留在了配置里。
 
@@ -256,6 +266,6 @@ nunchaku.exe bridge --connector <...>\md2docx-remote\connector.json --root <项�
 ## 安全提醒
 
 - 你提交的文件会传到服务端。不要提交密钥、凭据或无关文件。
-- 当前 POC **没有鉴权**，只适合在本机或可信网络内验证使用，不要把网关端口直接暴露到公网。
+- 访问网关需要 Service Key，它决定你能使用哪些服务。妥善保管，不要提交到代码仓库或发到群里。
 - 私有提示词无法仅靠"不要泄露"的指令做到严格保密：拿到访问权限的人可以反复提问，诱导模型复述私有 Skill。
 - 桥接模式默认会写入你的工作区。确认信任该服务后再使用，或者每次都用 `apply_changes: false` 先审阅。

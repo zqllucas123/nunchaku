@@ -63,12 +63,19 @@ flowchart LR
 
 ### 1.3 安全须知（请务必阅读）
 
-当前版本**没有登录和鉴权**：能访问网关的人就能调用所有服务。部署时必须：
+访问控制分两层：
 
-1. **只在公司内网开放**，不要映射到公网。
-2. 用防火墙或 Nginx `allow/deny` 把访问限制在办公网段。
-3. 各服务端口（8765 等）和管理台（8787）**只监听 `127.0.0.1`**，不要对外开放。
-4. 告知员工：提交的文件会传到服务器处理，**不要提交密钥、凭据、无关文件**。
+| 对象 | 方式 | 说明 |
+|---|---|---|
+| 管理台 | 管理员账号登录 | 只有管理员能登录；账号在服务器上用命令行创建（第 4 章） |
+| 网关（员工调用服务） | Service Key | 管理员在管理台为每位使用者生成，并限定可访问的服务（第 4.3 节） |
+
+部署时还须注意：
+
+1. 对外入口一律走 **HTTPS**（Nginx），Service Key 和管理员登录态都不应明文传输。
+2. 各服务端口（如 8765）**只监听 `127.0.0.1`**，不要对外开放；它们自身不校验 Key，只应由网关访问。
+3. 有条件的话，再用防火墙或 Nginx `allow/deny` 把访问限制在办公网段。
+4. 告知员工：提交的文件会传到服务器处理，**不要提交密钥、凭据、无关文件**；Service Key 等同于个人账号密码，不要转借。
 5. 私有 Skill 的内容不能仅靠"不要泄露"的提示词做到绝对保密。真正必须保密的规则和数据，应写进服务端脚本或工具，而不是 Skill 文本。
 
 ---
@@ -120,6 +127,11 @@ sudo chmod -R o-rwx /srv/private-skills
 ```json
 {
   "gateway": {"host": "127.0.0.1", "port": 8750},
+  "dashboard": {
+    "allowed_hosts": ["nunchaku.corp.example.com"],
+    "secure_cookies": true,
+    "public_gateway_url": "https://nunchaku.corp.example.com/mcp"
+  },
   "services": [
     {
       "name": "md2docx",
@@ -138,17 +150,23 @@ sudo chmod -R o-rwx /srv/private-skills
 
 字段说明：
 
-| 字段                   | 说明                                                                                                                                              |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `gateway.host`       | 用 Nginx 时保持 `127.0.0.1`；网关直接对内网开放时改成 `0.0.0.0`                                                                               |
-| `gateway.port`       | 网关端口，不能和任何服务重复                                                                                                                      |
-| `name`               | 服务名，也是员工在 AIKO 里看到的**工具名**。小写字母开头，只能含小写字母、数字、`-`、`_`                                                |
-| `description`        | **非常重要**。AIKO 靠这段话判断什么时候调用这个服务，请写清楚"做什么、输入什么、产出什么"                                                   |
-| `skill`              | 私有 Skill 目录                                                                                                                                   |
-| `engine`             | `codex`、`claude`、`hermes` 或 `custom`                                                                                                   |
+| 字段 | 说明 |
+| --- | --- |
+| `gateway.host` | 用 Nginx 时保持 `127.0.0.1`；网关直接对内网开放时改成 `0.0.0.0` |
+| `gateway.port` | 网关端口，不能和任何服务重复 |
+| `gateway.auth` | 是否要求 Service Key，默认 `true`。**只在仅本机访问的开发环境**才设为 `false` |
+| `dashboard.allowed_hosts` | 经 Nginx 访问管理台时，浏览器地址栏里的主机名（带非标准端口时写 `host:port`）。不在列表里的 Host 会被拒绝 |
+| `dashboard.secure_cookies` | 管理台走 HTTPS 时设为 `true`，登录 Cookie 只在 HTTPS 下发送 |
+| `dashboard.public_gateway_url` | 员工使用的网关地址。管理台会显示它，并写进生成 Key 时给出的配置示例 |
+| `name` | 服务名，也是员工在 AIKO 里看到的**工具名**。小写字母开头，只能含小写字母、数字、`-`、`_`。在管理台改名时，各 Service Key 的授权会自动跟随 |
+| `description` | **非常重要**。AIKO 靠这段话判断什么时候调用这个服务，请写清楚"做什么、输入什么、产出什么" |
+| `skill` | 私有 Skill 目录 |
+| `engine` | `codex`、`claude`、`hermes` 或 `custom` |
 | `command` / `args` | 自定义引擎的可执行文件和参数。参数里可用 `{prompt}`、`{workspace}`、`{output}`、`{skill}` 占位符；不写 `{prompt}` 时提示词从 stdin 传入 |
-| `port`               | 服务自己的端口，每个服务不同                                                                                                                      |
-| `timeout_seconds`    | 单次执行上限。自定义引擎自身的超时（如上面的 `--timeout 170`）应略小于它                                                                        |
+| `port` | 服务自己的端口，每个服务不同 |
+| `timeout_seconds` | 单次执行上限。自定义引擎自身的超时（如上面的 `--timeout 170`）应略小于它 |
+
+管理员账号和 Service Key 不在这个文件里，而是保存在同目录的 `.nunchaku/auth.db`（SQLite，权限 600）。**备份时请一并备份这个文件**；只保存哈希，不含明文 Key 和密码。
 
 校验配置：
 
@@ -204,18 +222,43 @@ Environment=PYTHONUNBUFFERED=1
 WantedBy=multi-user.target
 ```
 
+`/etc/systemd/system/nunchaku-dashboard.service`（管理台，经 Nginx 对外，见 3.1）：
+
+```ini
+[Unit]
+Description=nunchaku dashboard
+After=network-online.target
+
+[Service]
+User=nunchaku
+WorkingDirectory=/opt/nunchaku
+ExecStart=/home/nunchaku/.local/bin/uv run --frozen nunchaku --config services.json dashboard --port 8789
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+```
+
 `uv` 的路径以 `which uv` 的结果为准。执行引擎需要的环境变量（如模型 API Key）用 `Environment=` 或 `EnvironmentFile=` 加进 `nunchaku-services.service`。
+
+创建第一个管理员（以服务账号身份执行，确保 `auth.db` 归它所有；密码交互输入，不会进入命令行历史）：
+
+```bash
+sudo -u nunchaku /home/nunchaku/.local/bin/uv run --frozen nunchaku --config services.json admin add admin
+```
 
 启动：
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now nunchaku-services nunchaku-gateway
-sudo systemctl status nunchaku-services nunchaku-gateway
+sudo systemctl enable --now nunchaku-services nunchaku-gateway nunchaku-dashboard
+sudo systemctl status nunchaku-services nunchaku-gateway nunchaku-dashboard
 journalctl -u nunchaku-gateway -f        # 查看网关日志
 ```
 
-> 也可以不用 systemd，改用管理台（第 4 章）手动启停。但管理台退出时会停掉它启动的所有进程，**正式环境请用 systemd**。
+> 也可以不用 systemd，改用管理台手动启停服务。但管理台退出时会停掉它启动的所有进程，**正式环境请用 systemd**。由 systemd 运行的服务在管理台中显示为「外部运行」。
 
 ### 2.5 Windows 服务器的差异
 
@@ -235,11 +278,11 @@ journalctl -u nunchaku-gateway -f        # 查看网关日志
 
 ---
 
-## 3. 对内网开放网关
+## 3. 对外开放网关和管理台
 
 ### 3.1 方案 A：Nginx 反向代理（推荐）
 
-网关保持 `"host": "127.0.0.1"`，由 Nginx 对外提供 HTTPS：
+网关和管理台都保持只监听 `127.0.0.1`，由 Nginx 对外提供 HTTPS。下面把两者放在同一个域名下：`/mcp` 给员工的 AIKO，其余路径给管理员的浏览器。
 
 ```nginx
 server {
@@ -249,11 +292,8 @@ server {
     ssl_certificate     /etc/nginx/certs/nunchaku.crt;
     ssl_certificate_key /etc/nginx/certs/nunchaku.key;
 
-    # 只允许办公网段
-    allow 10.0.0.0/8;
-    deny  all;
-
-    location /mcp {
+    # 网关：员工的 AIKO 访问这里。Service Key 由网关自己校验。
+    location = /mcp {
         proxy_pass http://127.0.0.1:8750/mcp;
         proxy_http_version 1.1;
 
@@ -271,16 +311,27 @@ server {
         client_max_body_size 32m;
         proxy_buffering off;
     }
+
+    # 管理台：管理员用浏览器访问，需要登录。
+    location / {
+        proxy_pass http://127.0.0.1:8789;
+        proxy_http_version 1.1;
+        # 原样转发 Host；它必须写在 services.json 的 dashboard.allowed_hosts 里
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        client_max_body_size 1m;
+    }
 }
 ```
 
-三个容易踩的坑：
+几个容易踩的坑：
 
-1. **`Host` 头必须是 `127.0.0.1:8750`**。网关监听本机时会开启防 DNS 重绑定校验，收到别的 Host 会返回 `421`；带外部域名的 `Origin` 头会返回 `403`，所以一并清掉。
-2. **超时要大于 180 秒**。Nginx 默认 60 秒，会在转换完成前断开。
-3. **请求体上限要放大**。Nginx 默认 1 MB，稍大的文档就会返回 `413`。
+1. **网关的 `Host` 头必须是 `127.0.0.1:8750`**。网关监听本机时会开启防 DNS 重绑定校验，收到别的 Host 会返回 `421`；带外部域名的 `Origin` 头会返回 `403`，所以一并清掉。
+2. **管理台的 `Host` 头反过来要原样转发**，并在 `dashboard.allowed_hosts` 里登记（浏览器地址带非标准端口时写 `host:port`）。否则返回 `400 Invalid host header`。
+3. **超时要大于 180 秒**。Nginx 默认 60 秒，会在转换完成前断开。
+4. **请求体上限要放大**。Nginx 默认 1 MB，稍大的文档就会返回 `413`。
 
-员工使用的地址：`https://nunchaku.corp.example.com/mcp`
+员工使用的地址：`https://nunchaku.corp.example.com/mcp`；管理员打开 `https://nunchaku.corp.example.com/`。
 
 如果用的是公司内部 CA 签发的证书，员工电脑需要信任这个 CA，见 8.2。
 
@@ -301,42 +352,55 @@ sudo firewall-cmd --reload
 
 员工使用的地址：`http://<服务器IP>:8750/mcp`
 
-此方案为明文 HTTP，且网关不再校验 Host 头，**只建议用于试用**。
+此方案为明文 HTTP，Service Key 会明文传输，且网关不再校验 Host 头，**只建议用于试用**。
 
 ### 3.3 验证
 
-在**一台员工电脑**上执行（地址换成你的）：
+在**一台员工电脑**上执行（地址和 Key 换成你的）：
 
 ```powershell
 curl.exe -s -X POST https://nunchaku.corp.example.com/mcp `
+  -H "Authorization: Bearer nk_xxxxxxxx" `
   -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" `
   -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}'
 ```
 
-返回内容里应能看到 `"name":"md2docx"`。如果返回的工具列表为空，说明网关通了，但服务没在运行（网关只列出在线的服务）。
+返回内容里应能看到这个 Key 有权访问的服务，如 `"name":"md2docx"`。不带 `Authorization` 头应返回 `401`。工具列表为空时，可能是服务没在运行（网关只列出在线的服务），也可能是这个 Key 没有被授予任何在线服务。
 
 ---
 
-## 4. 管理台（可选）
+## 4. 管理台
 
-管理台只监听服务器本机，用于可视化地新增、编辑、启停服务，以及查看日志：
+### 4.1 管理员账号
 
-```bash
-uv run nunchaku --config services.json dashboard --port 8787
-```
-
-从自己电脑访问需建 SSH 隧道：
+管理台只允许管理员登录。账号只能在服务器上用命令行管理（以服务账号身份执行）：
 
 ```bash
-ssh -L 8787:127.0.0.1:8787 admin@nunchaku-server
+nunchaku --config services.json admin add <用户名>      # 创建，交互输入密码（至少 8 位）
+nunchaku --config services.json admin passwd <用户名>   # 重置密码，并让该账号所有登录失效
+nunchaku --config services.json admin list
+nunchaku --config services.json admin remove <用户名>
 ```
 
-然后打开 [http://127.0.0.1:8787/](http://127.0.0.1:8787/)。
+登录后可在页面左下角「修改密码」。连续输错 5 次密码，账号锁定 15 分钟；用 `admin passwd` 重置可立即解锁。登录有效期 12 小时。
 
-注意：
+### 4.2 服务管理
 
-- 正式环境的服务由 systemd 管理时，**不要在管理台里再启动同一个服务**，会因端口占用而失败。管理台此时主要用于编辑配置和查看日志。
-- 管理台没有登录，只能通过 SSH 隧道访问，不要对外开放。
+在「服务管理」页可以新增、编辑、删除服务，查看网关地址。由 systemd 运行的服务显示为「外部运行」，不能在页面上启停；修改配置后需在服务器上 `systemctl restart nunchaku-services` 才生效，日志用 `journalctl` 查看。
+
+### 4.3 Service Key
+
+员工访问网关必须携带 Service Key。在「Service Key」页：
+
+1. 点「生成 Service Key」，填写使用者、部门、邮箱、备注。
+2. 勾选可访问的服务；或勾选「全部服务（包括以后新增的）」。
+3. 可选填写过期时间，到期后自动失效。
+4. 生成后**完整 Key 只显示这一次**，同时给出可直接交给员工的 AIKO 配置。服务端只保存哈希，丢失后只能重新生成。
+
+之后可以随时修改授权、停用或删除，**立即生效**，不用重启网关。列表中可以看到每个 Key 的最后使用时间和调用次数；网关日志会记录每次调用的使用者。
+
+- 一个 Key 只能看到、也只能调用被授权的服务；员工在 AIKO 里看不到其他服务。
+- 在管理台给服务改名，各 Key 的授权会自动改到新名字；删除服务，各 Key 的授权中也会去掉它。若某个 Key 因此没有任何可访问的服务，它会被自动停用。
 
 ---
 
@@ -402,7 +466,7 @@ nunchaku install-skill --path "$HOME\.sdw\skills"
 1. 打开 AIKO 的 MCP 面板，点「+」。
 2. **名称**填 `nunchaku`（连接 Skill 里就是这样称呼它的，请不要改）。
 3. **类型**选 **STDIO**。
-4. **配置**填写（把用户名、地址和项目目录换成自己的）：
+4. **配置**填写（把用户名、地址、项目目录和 Service Key 换成自己的；Key 向管理员申请）：
 
 ```json
 {
@@ -414,14 +478,17 @@ nunchaku install-skill --path "$HOME\.sdw\skills"
     "--root",
     "D:\\work\\docs"
   ],
-  "env": {}
+  "env": {
+    "NUNCHAKU_SERVICE_KEY": "nk_xxxxxxxxxxxxxxxx"
+  }
 }
 ```
 
-5. 点「测试」，应显示服务器上的工具（如 `md2docx`）。通过后点「添加」。
+5. 点「测试」，应显示你有权使用的工具（如 `md2docx`）。通过后点「添加」。
 
 注意事项：
 
+- **Service Key 放在 `env` 里**，不要写进 `args`，避免出现在进程列表中。它等同于你的个人账号，不要转借；怀疑泄露时请管理员停用后重新生成。
 - **JSON 里的路径要写双反斜杠** `\\`，或者全部改用正斜杠 `/`。
 - **`command` 写 `.exe` 的完整路径**，不要只写 `nunchaku`，AIKO 拉起子进程时不一定能找到 PATH 里的命令。
 - **`--root` 是读写边界**：桥接器只能读写这个目录下的文件，路径一律相对于它。请填你平时存放待处理文档的目录，**不要填盘符根目录或用户主目录**。
@@ -446,6 +513,7 @@ Write-Host ""
 Write-Host "安装完成。请在 AIKO 的 MCP 面板中添加名为 nunchaku 的 STDIO 服务器："
 Write-Host "  command: $HOME\.local\bin\nunchaku.exe"
 Write-Host "  args:    bridge --url $Gateway --root <你的文档目录>"
+Write-Host "  env:     NUNCHAKU_SERVICE_KEY = <管理员发给你的 Service Key>"
 ```
 
 ---
@@ -513,12 +581,13 @@ Write-Host "  args:    bridge --url $Gateway --root <你的文档目录>"
    sudo systemctl restart nunchaku-services
    ```
 4. **网关不需要重启**，它会自动发现配置变化。
-5. 通知员工：**在 AIKO 中重启 `nunchaku` 这条 MCP 连接**，就能看到新工具。
+5. 在管理台「Service Key」页，给需要的使用者授权这个新服务（授权为「全部服务」的 Key 自动包含它）。
+6. 通知员工：**在 AIKO 中重启 `nunchaku` 这条 MCP 连接**，就能看到新工具。
 
 ### 7.2 修改或下线服务
 
 - 修改描述、超时等：改 `services.json` 后 `systemctl restart nunchaku-services`。
-- 下线：从 `services.json` 删除后重启。员工下次重连时该工具消失；在此之前调用会得到 `unknown service`。
+- 改名、下线**请在管理台操作**：管理台会同步更新各 Service Key 的授权；直接手改 `services.json` 不会。员工下次重连时该工具消失；在此之前调用会得到 `unknown service`。
 
 ### 7.3 升级 nunchaku
 
@@ -528,7 +597,7 @@ Write-Host "  args:    bridge --url $Gateway --root <你的文档目录>"
 cd /opt/nunchaku
 git pull
 uv sync
-sudo systemctl restart nunchaku-services nunchaku-gateway
+sudo systemctl restart nunchaku-services nunchaku-gateway nunchaku-dashboard
 ```
 
 员工电脑：重新构建并分发 wheel，员工执行 `uv tool install --force <新 wheel>`。**升级前必须先退出 AIKO**，否则会报"拒绝访问"（见 8.1）。
@@ -544,13 +613,15 @@ sudo systemctl restart nunchaku-services nunchaku-gateway
 一次正常调用在服务端的日志大致如下：
 
 ```
-10:20:06 INFO    [md2docx] call started: tool=md2docx, 1 file(s), task='把 设计方案.md 转成 docx'
+10:20:06 INFO    [md2docx] call started by 张三 (nk_82c2af…): 1 file(s), task='把 设计方案.md 转成 docx'
 10:20:06 INFO    [md2docx] run started: 1 input file(s), 11292 bytes, task='把 设计方案.md 转成 docx'
 10:20:06 INFO    [md2docx] engine started: /usr/local/bin/aiko (timeout 180s)
 10:20:54 INFO    [md2docx] engine finished in 48.2s with code 0
 10:20:54 INFO    [md2docx] run finished in 48.3s: 2 changed, 0 deleted, answer 544 chars
 10:20:54 INFO    [md2docx] call finished in 48.4s: 2 changed, 0 deleted
 ```
+
+网关日志会注明每次调用的使用者和 Key 前缀；被拒绝的请求（缺少或无效的 Key、访问未授权的服务）记为 `WARNING`。
 
 需要更多细节时，在启动命令里加 `--log-level DEBUG`（如 `nunchaku --log-level DEBUG --config services.json gateway`），会逐个列出改动的文件。
 
@@ -567,6 +638,12 @@ AIKO 正在运行桥接器，占用了这个目录。完全退出 AIKO（包括�
 
 **AIKO 测试连接失败，stderr 里有 `cannot reach gateway`**
 连不上网关。先用 3.3 的 `curl` 在本机测试；检查地址、端口、防火墙、代理。如果公司有 HTTP 代理，把网关域名加入 `NO_PROXY`，例如在 MCP 配置的 `env` 里写 `{"NO_PROXY": "nunchaku.corp.example.com"}`。
+
+**`cannot reach gateway ...: 401 Unauthorized: check NUNCHAKU_TOKEN`**
+Service Key 缺失、写错、已停用或已过期。检查 MCP 配置 `env` 里的 `NUNCHAKU_SERVICE_KEY`；仍不行请管理员在管理台确认该 Key 的状态。
+
+**`this service key may not use xxx`**
+你的 Key 没有被授权使用这个服务，请向管理员申请。
 
 **`project root is not a directory`**
 `--root` 填的目录不存在，常见原因是把示例路径原样留在了配置里。
@@ -600,6 +677,15 @@ AIKO 正在运行桥接器，占用了这个目录。完全退出 AIKO（包括�
 **Nginx 返回 `421 Misdirected Request`**
 没有按 3.1 设置 `proxy_set_header Host 127.0.0.1:8750;`。
 
+**管理台返回 `400 Invalid host header`**
+浏览器地址里的主机名（含非标准端口）不在 `dashboard.allowed_hosts` 里，或 Nginx 没有原样转发 `Host`。
+
+**管理台登录后立刻又跳回登录页**
+`dashboard.secure_cookies` 为 `true`，但用 `http://` 访问，浏览器不会发送 Cookie。改用 HTTPS，或在纯本机调试时设为 `false`。
+
+**管理员忘记密码或账号被锁定**
+在服务器上执行 `nunchaku --config services.json admin passwd <用户名>`。
+
 **Nginx 返回 `403`，网关日志里有 `Invalid Origin header`**
 没有按 3.1 设置 `proxy_set_header Origin "";`。
 
@@ -627,18 +713,19 @@ AIKO 正在运行桥接器，占用了这个目录。完全退出 AIKO（包括�
 
 > 可以直接转发给员工。
 
-1. 安装：`uv tool install \\fileserver\tools\nunchaku\nunchaku-0.1.0-py3-none-any.whl`
-2. 装 Skill：`nunchaku install-skill --path "$HOME\.sdw\skills"`
-3. AIKO → MCP → 「+」→ 名称 `nunchaku`，类型 STDIO，配置：
+1. 向管理员申请 **Service Key**（形如 `nk_…`），它等同于你的个人账号，不要转借。
+2. 安装：`uv tool install \\fileserver\tools\nunchaku\nunchaku-0.1.0-py3-none-any.whl`
+3. 装 Skill：`nunchaku install-skill --path "$HOME\.sdw\skills"`
+4. AIKO → MCP → 「+」→ 名称 `nunchaku`，类型 STDIO，配置：
 
    ```json
    {
      "command": "C:\\Users\\<你的用户名>\\.local\\bin\\nunchaku.exe",
      "args": ["bridge", "--url", "https://nunchaku.corp.example.com/mcp", "--root", "D:\\<你的文档目录>"],
-     "env": {}
+     "env": {"NUNCHAKU_SERVICE_KEY": "<你的 Service Key>"}
    }
    ```
-4. 测试 → 添加。
-5. 会话中直接说：「把 xxx.md 转成 docx」。文件名写相对路径，不要加 `./`。
-6. 管理员通知有新服务时：在 AIKO 中重启 `nunchaku` 连接。
-7. 升级前先退出 AIKO。
+5. 测试 → 添加。
+6. 会话中直接说：「把 xxx.md 转成 docx」。文件名写相对路径，不要加 `./`。
+7. 管理员通知有新服务时：在 AIKO 中重启 `nunchaku` 连接。
+8. 升级前先退出 AIKO。

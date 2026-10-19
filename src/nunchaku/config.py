@@ -39,6 +39,38 @@ class Service:
 class Gateway:
     host: str = "127.0.0.1"
     port: int = 8750
+    # Require a service key on every request. Turn off only for a loopback-only dev setup.
+    auth: bool = True
+
+
+@dataclass(frozen=True)
+class Dashboard:
+    # Extra Host values the dashboard accepts, e.g. "47.97.189.132:8768" behind a proxy.
+    allowed_hosts: tuple[str, ...] = ()
+    # Set the Secure flag on the session cookie; enable when served over HTTPS.
+    secure_cookies: bool = False
+    # Gateway URL as users reach it, shown in the dashboard and the key hand-off snippet.
+    public_gateway_url: str = ""
+
+
+def _hosts(value: object, where: str) -> tuple[str, ...]:
+    if not isinstance(value, list) or not all(isinstance(h, str) and h and len(h) <= 255 for h in value):
+        raise ValueError(f"{where}: allowed_hosts must be a list of host[:port] strings")
+    return tuple(value)
+
+
+def load_dashboard(path: str | Path) -> Dashboard:
+    raw = json.loads(Path(path).expanduser().resolve().read_text(encoding="utf-8"))
+    item = raw.get("dashboard", {}) if isinstance(raw, dict) else {}
+    if not isinstance(item, dict) or set(item) - {"allowed_hosts", "secure_cookies", "public_gateway_url"}:
+        raise ValueError("dashboard accepts allowed_hosts, secure_cookies, and public_gateway_url")
+    secure = item.get("secure_cookies", False)
+    if not isinstance(secure, bool):
+        raise ValueError("dashboard: secure_cookies must be true or false")
+    public = item.get("public_gateway_url", "")
+    if not isinstance(public, str) or (public and not public.startswith(("http://", "https://"))):
+        raise ValueError("dashboard: public_gateway_url must be an http(s) URL")
+    return Dashboard(_hosts(item.get("allowed_hosts", []), "dashboard"), secure, public)
 
 
 def load_services(path: str | Path) -> list[Service]:
@@ -55,17 +87,20 @@ def load_gateway(path: str | Path) -> Gateway:
 
 def parse_gateway(raw: object, services: list[Service]) -> Gateway:
     item = raw.get("gateway", {}) if isinstance(raw, dict) else {}
-    if not isinstance(item, dict) or set(item) - {"host", "port"}:
-        raise ValueError("gateway must be an object with host and port")
+    if not isinstance(item, dict) or set(item) - {"host", "port", "auth"}:
+        raise ValueError("gateway must be an object with host, port, and auth")
     host = item.get("host", Gateway.host)
     port = item.get("port", Gateway.port)
+    auth = item.get("auth", Gateway.auth)
     if not isinstance(host, str) or not host:
         raise ValueError("gateway: host is required")
     if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
         raise ValueError("gateway: port must be 1..65535")
+    if not isinstance(auth, bool):
+        raise ValueError("gateway: auth must be true or false")
     if any(service.port == port for service in services):
         raise ValueError(f"gateway port {port} is already used by a service")
-    return Gateway(host, port)
+    return Gateway(host, port, auth)
 
 
 def parse_services(raw: object, config_path: Path) -> list[Service]:
