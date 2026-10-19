@@ -98,6 +98,8 @@ def _validate_url(value: str) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="nunchaku")
     parser.add_argument("--config", default="services.json", help="service configuration JSON")
+    parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+                        help="stderr log level (default INFO; DEBUG lists per-file details)")
     commands = parser.add_subparsers(dest="action", required=True)
     commands.add_parser("list", help="validate and list services")
     single = commands.add_parser("serve", help="serve one MCP endpoint")
@@ -123,6 +125,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        from .log import configure
+        configure(args.log_level)
         if args.action == "dashboard":
             from .admin import serve_dashboard
             print(f"Dashboard: http://127.0.0.1:{args.port}/", flush=True)

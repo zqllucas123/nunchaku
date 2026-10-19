@@ -10,7 +10,6 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
-
 import uvicorn
 from mcp import types
 from mcp.server.fastmcp.server import StreamableHTTPASGIApp
@@ -22,8 +21,10 @@ from starlette.routing import Route
 
 from .bridge import META_KEY, invoke_remote
 from .config import Gateway, Service, load_gateway, load_services
+from .log import logger, preview
 from .server import MAX_REQUEST_BYTES
 
+LOG = logger("gateway")
 HEALTH_TTL_SECONDS = 3.0
 
 INPUT_SCHEMA = {
@@ -83,9 +84,13 @@ class Registry:
     def services(self) -> dict[str, Service]:
         mtime = self.path.stat().st_mtime
         if mtime != self._mtime:
+            previous = set(self._services)
             self._services = {service.name: service for service in load_services(self.path)}
             self._mtime = mtime
             self._health.clear()
+            added, removed = set(self._services) - previous, previous - set(self._services)
+            LOG.info("registry loaded: %d service(s)%s%s", len(self._services),
+                     f", added {sorted(added)}" if added else "", f", removed {sorted(removed)}" if removed else "")
         return self._services
 
     async def _alive(self, service: Service) -> bool:
@@ -105,7 +110,9 @@ class Registry:
     async def online(self) -> list[Service]:
         services = list(self.services().values())
         alive = await asyncio.gather(*(self._alive(service) for service in services))
-        return [service for service, ok in zip(services, alive) if ok]
+        online = [service for service, ok in zip(services, alive) if ok]
+        LOG.debug("online services: %s", [service.name for service in online])
+        return online
 
 
 def build_gateway(config_path: str | Path, gateway: Gateway) -> Starlette:
@@ -120,17 +127,31 @@ def build_gateway(config_path: str | Path, gateway: Gateway) -> Starlette:
 
     @server.list_tools()
     async def list_tools() -> list[types.Tool]:
-        return [describe(service) for service in await registry.online()]
+        services = await registry.online()
+        LOG.info("tools/list: offering %s", [service.name for service in services] or "no services")
+        return [describe(service) for service in services]
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         service = registry.services().get(name)
         if service is None:
+            LOG.warning("tools/call: unknown service %r", name)
             raise ValueError(f"unknown service: {name}")
-        result = await invoke_remote(
-            backend_url(service), service.timeout_seconds,
-            arguments.get("task", ""), arguments.get("files") or [],
-        )
+        files = arguments.get("files") or []
+        LOG.info("[%s] call started: tool=%s, %d file(s), task=%r",
+                 service.name, name, len(files), preview(arguments.get("task", "")))
+        started = time.monotonic()
+        try:
+            result = await invoke_remote(
+                backend_url(service), service.timeout_seconds,
+                arguments.get("task", ""), files,
+            )
+        except Exception as exc:
+            LOG.error("[%s] call failed after %.1fs: %s: %s",
+                      service.name, time.monotonic() - started, type(exc).__name__, str(exc)[:400])
+            raise
+        LOG.info("[%s] call finished in %.1fs: %d changed, %d deleted",
+                 service.name, time.monotonic() - started, len(result.changed_files), len(result.deleted_files))
         return result.model_dump()
 
     # Same DNS-rebinding defaults FastMCP applies to loopback servers.
@@ -156,4 +177,7 @@ def build_gateway(config_path: str | Path, gateway: Gateway) -> Starlette:
 
 def serve_gateway(config_path: str | Path) -> None:
     gateway = load_gateway(config_path)
+    services = load_services(config_path)
+    LOG.info("gateway starting on http://%s:%s/mcp with %d configured service(s): %s",
+             gateway.host, gateway.port, len(services), [service.name for service in services] or "none")
     uvicorn.run(build_gateway(config_path, gateway), host=gateway.host, port=gateway.port, log_level="info")

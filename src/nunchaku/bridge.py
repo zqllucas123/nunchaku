@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import time
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -12,9 +13,11 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel
 
+from .log import logger, preview
 from .runner import MAX_FILES, MAX_FILE_BYTES, MAX_TOTAL_BYTES, _safe_path, decode_content, encode_content
 from .server import SkillResult
 
+LOG = logger("bridge")
 PROPOSED_DIR = (".nunchaku", "proposed")
 # Tool _meta key the gateway uses to mark its service tools.
 META_KEY = "nunchaku"
@@ -160,10 +163,25 @@ def _register(mcp: FastMCP, root: Path, url: str, local_name: str, remote_tool: 
               service: str, description: str, timeout_seconds: int) -> None:
     async def execute(task: str, paths: list[str] | None = None, apply_changes: bool = True) -> BridgeResult:
         files = _snapshot(root, paths or [])
-        remote = await invoke_remote(url, timeout_seconds, task, files, remote_tool)
+        LOG.info("[%s] call started: %d file(s) %s, apply_changes=%s, task=%r",
+                 service, len(files), [item["path"] for item in files], apply_changes, preview(task))
+        started = time.monotonic()
+        try:
+            remote = await invoke_remote(url, timeout_seconds, task, files, remote_tool)
+        except Exception as exc:
+            LOG.error("[%s] remote call failed after %.1fs: %s: %s",
+                      service, time.monotonic() - started, type(exc).__name__, str(exc)[:400])
+            raise
+        remote_seconds = time.monotonic() - started
         if remote.service != service:
             raise RuntimeError(f"unexpected remote service: {remote.service}")
-        return _apply(root, remote, apply_changes)
+        result = _apply(root, remote, apply_changes)
+        LOG.info("[%s] done in %.1fs (remote %.1fs): applied %s, deleted %s, conflicts %s",
+                 service, time.monotonic() - started, remote_seconds,
+                 result.applied_files, result.deleted_files, result.conflicts)
+        if result.conflicts:
+            LOG.warning("[%s] conflicts left for the Agent: %s", service, result.conflicts)
+        return result
 
     mcp.add_tool(
         execute,
@@ -215,9 +233,12 @@ def serve_bridge(name: str, description: str, url: str, root: Path, timeout_seco
 
 
 def serve_gateway_bridge(url: str, root: Path) -> None:
-    _check_root(root)
+    root = _check_root(root)
+    LOG.info("bridge starting: gateway=%s root=%s", url, root)
     try:
         tools = anyio.run(discover, url)
     except Exception as exc:
         raise OSError(f"cannot reach gateway {url}: {exc}") from exc
+    names = [tool.name for tool in tools if (tool.meta or {}).get(META_KEY)]
+    LOG.info("bridge discovered %d service tool(s): %s", len(names), names or "none")
     build_gateway_bridge(url, root, tools).run(transport="stdio")

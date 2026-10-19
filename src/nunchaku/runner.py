@@ -8,10 +8,14 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .config import PLACEHOLDERS, Service
+from .log import logger, preview
+
+LOG = logger("runner")
 
 
 MAX_FILES = 50
@@ -111,6 +115,10 @@ def _run_sync(service: Service, task: str, files: list[dict[str, str]]) -> dict[
     if not isinstance(task, str) or not task.strip() or len(task) > 32_000:
         raise ValueError("task must be 1..32000 characters")
     before = _prepare_files(files)
+    total_bytes = sum(len(data) for data in before.values())
+    LOG.info("[%s] run started: %d input file(s), %d bytes, task=%r",
+             service.name, len(before), total_bytes, preview(task))
+    started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="nunchaku-") as directory:
         workspace = Path(directory)
         for relative, content in before.items():
@@ -134,6 +142,8 @@ def _run_sync(service: Service, task: str, files: list[dict[str, str]]) -> dict[
             f"User task:\n{task}"
         )
         command, stdin = _command(service, workspace, output, prompt, skill_dir)
+        LOG.info("[%s] engine started: %s (timeout %ss)", service.name, command[0], service.timeout_seconds)
+        engine_started = time.monotonic()
         try:
             completed = subprocess.run(
                 command,
@@ -147,11 +157,17 @@ def _run_sync(service: Service, task: str, files: list[dict[str, str]]) -> dict[
                 check=False,
             )
         except FileNotFoundError as exc:
+            LOG.error("[%s] engine executable missing: %s", service.name, command[0])
             raise RuntimeError(f"engine executable unavailable: {command[0]}") from exc
         except subprocess.TimeoutExpired as exc:
+            LOG.error("[%s] engine timed out after %ss", service.name, service.timeout_seconds)
             raise RuntimeError(f"engine timed out after {service.timeout_seconds}s") from exc
+        engine_seconds = time.monotonic() - engine_started
         if completed.returncode:
+            tail = (completed.stderr or completed.stdout or "").strip()[-400:]
+            LOG.error("[%s] engine exited %s after %.1fs: %s", service.name, completed.returncode, engine_seconds, tail)
             raise RuntimeError(f"{service.engine} exited {completed.returncode}; contact the service provider")
+        LOG.info("[%s] engine finished in %.1fs with code 0", service.name, engine_seconds)
         answer = output.read_text(encoding="utf-8") if output.is_file() else completed.stdout.strip()
         answer = answer.replace(str(workspace) + os.sep, "")
         after = _collect_files(workspace)
@@ -170,6 +186,12 @@ def _run_sync(service: Service, task: str, files: list[dict[str, str]]) -> dict[
             {"path": path, "base_sha256": hashlib.sha256(before[path]).hexdigest()}
             for path in sorted(set(before) - set(after))
         ]
+        LOG.info("[%s] run finished in %.1fs: %d changed, %d deleted, answer %d chars",
+                 service.name, time.monotonic() - started, len(changes), len(deleted), len(answer.strip()))
+        for change in changes:
+            LOG.debug("[%s] changed: %s", service.name, change["path"])
+        for deletion in deleted:
+            LOG.debug("[%s] deleted: %s", service.name, deletion["path"])
         return {
             "service": service.name,
             "engine": service.engine,
