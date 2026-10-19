@@ -231,6 +231,8 @@ After=network-online.target
 
 [Service]
 User=nunchaku
+# 只给管理台进程读取 systemd journal 的权限，用来在页面上显示 systemd 运行的服务和网关的日志
+SupplementaryGroups=systemd-journal
 WorkingDirectory=/opt/nunchaku
 ExecStart=/home/nunchaku/.local/bin/uv run --frozen nunchaku --config services.json dashboard --port 8789
 Restart=on-failure
@@ -240,6 +242,8 @@ Environment=PYTHONUNBUFFERED=1
 [Install]
 WantedBy=multi-user.target
 ```
+
+`SupplementaryGroups=systemd-journal` 只作用于管理台这一个进程，服务进程和网关没有这个权限。不加这一行，管理台仍可使用，只是「运行日志」面板会提示改用 `journalctl` 查看。管理台默认读取 `nunchaku-services`、`nunchaku-gateway` 两个单元的日志；如果你的单元名不同，在 `services.json` 的 `dashboard` 段用 `services_unit`、`gateway_unit` 指定，设为 `""` 表示不读取。
 
 `uv` 的路径以 `which uv` 的结果为准。执行引擎需要的环境变量（如模型 API Key）用 `Environment=` 或 `EnvironmentFile=` 加进 `nunchaku-services.service`。
 
@@ -386,7 +390,7 @@ nunchaku --config services.json admin remove <用户名>
 
 ### 4.2 服务管理
 
-在「服务管理」页可以新增、编辑、删除服务，查看网关地址。由 systemd 运行的服务显示为「外部运行」，不能在页面上启停；修改配置后需在服务器上 `systemctl restart nunchaku-services` 才生效，日志用 `journalctl` 查看。
+在「服务管理」页可以新增、编辑、删除服务，查看网关地址。由 systemd 运行的服务显示为「外部运行」，不能在页面上启停；修改配置后需在服务器上 `systemctl restart nunchaku-services` 才生效。它们的「运行日志」读取自 systemd journal（需要 2.4 中的 `SupplementaryGroups=systemd-journal`），面板标题旁会注明日志来源。
 
 ### 4.3 Service Key
 
@@ -606,8 +610,8 @@ sudo systemctl restart nunchaku-services nunchaku-gateway nunchaku-dashboard
 
 | 进程         | 查看方式                                                                                 |
 | ------------ | ---------------------------------------------------------------------------------------- |
-| 服务进程     | `journalctl -u nunchaku-services -f`；用管理台启动时在 `.nunchaku/logs/<服务名>.log` |
-| 网关         | `journalctl -u nunchaku-gateway -f`；用管理台启动时在 `.nunchaku/logs/_gateway.log`  |
+| 服务进程     | 管理台中选中该服务看「运行日志」；或 `journalctl -u nunchaku-services -f`；用管理台启动时在 `.nunchaku/logs/<服务名>.log` |
+| 网关         | 管理台网关卡片的「查看日志」；或 `journalctl -u nunchaku-gateway -f`；用管理台启动时在 `.nunchaku/logs/_gateway.log`  |
 | 员工端桥接器 | 写到 stderr，在 AIKO 的 MCP 日志中查看                                                   |
 
 一次正常调用在服务端的日志大致如下：

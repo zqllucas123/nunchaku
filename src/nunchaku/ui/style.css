@@ -8,3 +8,4 @@
 .row-state.external{background:#45d2a0}.state-badge.external{color:#21a879;background:#e7f9f0}.external-note{margin-top:12px}
 .form-grid .grant-field{grid-column:1/-1}.form-grid label.check{display:flex;font-weight:500;font-size:12px}.form-grid label.check input{display:inline-block;width:auto;height:auto;margin:2px 0 0;padding:0;box-shadow:none;flex:none}.form-grid label.check span{display:block;margin:0}.form-grid label.check small{display:block;font-size:11px;color:#98a5b5;font-weight:400;margin-top:2px}.form-grid label.check strong{font-size:12px;color:#33445b}
 .modal>.modal-head,.modal>.modal-intro,.modal>.endpoint-box,.modal>.setup-note,.modal>.modal-actions{margin-left:25px;margin-right:25px}.modal>.modal-head{margin-top:25px}.modal>.modal-actions{margin-bottom:25px}.modal>.setup-note{margin-top:14px}
+.logs-source{font-weight:400;font-size:10px;color:#98a5b5;margin-left:6px}

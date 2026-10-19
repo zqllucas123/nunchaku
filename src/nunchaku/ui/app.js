@@ -68,16 +68,25 @@ function renderDetail() {
     </div>
     <div class="endpoint-box"><code title="服务端本机地址">${escapeHtml(service.endpoint)}</code><button class="text-button" data-action="copy">复制地址</button></div>
     <div class="action-row">${startStop}<button class="button secondary" data-action="export">导出连接包</button><span class="spacer"></span><button class="button secondary" data-action="edit" ${running ? "disabled title='请先停止服务'" : ""}>编辑</button><button class="button danger" data-action="delete" ${running ? "disabled title='请先停止服务'" : ""}>删除</button></div>
-    ${external ? `<p class="detail-desc external-note">该服务由外部进程（如 systemd）运行。修改配置后需在服务器上重启服务进程才会生效；日志请用 <code>journalctl</code> 查看。</p>` : ""}
-    <div class="logs-head"><span>运行日志</span><button class="text-button" data-action="logs">刷新日志</button></div><pre class="logs" id="logs">加载中…</pre>
+    ${external ? `<p class="detail-desc external-note">该服务由外部进程（如 systemd）运行。修改配置后需在服务器上重启服务进程才会生效；下方日志读取自 systemd journal。</p>` : ""}
+    <div class="logs-head"><span>运行日志 <small class="logs-source" id="logs-source"></small></span><button class="text-button" data-action="logs">刷新日志</button></div><pre class="logs" id="logs">加载中…</pre>
   </div>`;
   loadLogs(service.name);
 }
 
+const logSource = (result) => result.source === "journal" ? `来自 systemd journal · ${result.unit}` : result.source === "file" ? "来自管理台日志文件" : "";
+
 async function loadLogs(name) {
   try {
     const result = await request(`${path(name)}/logs`);
-    if (state.selected === name && $("#logs")) $("#logs").textContent = result.logs;
+    if (state.selected !== name || !$("#logs")) return;
+    const node = $("#logs");
+    // Keep the reader at the bottom only if they were already there.
+    const atBottom = node.scrollHeight - node.scrollTop - node.clientHeight < 24;
+    node.textContent = result.logs;
+    $("#logs-source").textContent = logSource(result);
+    if (atBottom || node.dataset.loaded !== name) node.scrollTop = node.scrollHeight;
+    node.dataset.loaded = name;
   } catch (error) { if (state.selected === name && $("#logs")) $("#logs").textContent = error.message; }
 }
 
@@ -113,7 +122,7 @@ function renderGateway() {
     <div class="gateway-info"><div class="eyebrow">GATEWAY · 客户唯一连接地址</div><strong>统一网关</strong>
       <p class="detail-desc">按工具名转发到各服务进程，只列出在线的服务（当前 ${online} 个）。${gateway.auth ? "需要 Service Key。" : "<b>未启用 Service Key 校验。</b>"}</p></div>
     <span class="state-badge ${running || external ? "running" : escapeHtml(gateway.state)}"><i></i>${label}</span>
-    <div class="endpoint-box"><code title="${gateway.public_endpoint ? "员工使用的地址" : "服务端本机地址；跨机器时客户应使用其可访问的地址"}">${escapeHtml(shown)}</code><button class="text-button" data-gateway="copy">复制地址</button>${external ? "" : `<button class="text-button" data-gateway="logs">查看日志</button>`}</div>
+    <div class="endpoint-box"><code title="${gateway.public_endpoint ? "员工使用的地址" : "服务端本机地址；跨机器时客户应使用其可访问的地址"}">${escapeHtml(shown)}</code><button class="text-button" data-gateway="copy">复制地址</button><button class="text-button" data-gateway="logs">查看日志</button></div>
     ${control}
   </div><pre class="logs" id="gateway-logs" hidden></pre>`;
 }
@@ -127,8 +136,13 @@ async function performGateway(action) {
   }
   if (action === "logs") {
     const node = $("#gateway-logs");
-    try { node.textContent = (await request("/api/gateway/logs")).logs; node.hidden = false; }
-    catch (error) { toast(error.message, true); }
+    try {
+      const result = await request("/api/gateway/logs");
+      node.textContent = result.logs;
+      node.title = logSource(result);
+      node.hidden = false;
+      node.scrollTop = node.scrollHeight;
+    } catch (error) { toast(error.message, true); }
     return;
   }
   state.busy = true;

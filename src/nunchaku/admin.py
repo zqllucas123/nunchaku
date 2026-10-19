@@ -26,6 +26,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
+from . import journal
 from .auth import SESSION_TTL_SECONDS, AuthStore, auth_path
 from .config import Service, load_dashboard, load_gateway, load_services, parse_services
 
@@ -247,17 +248,38 @@ class ServiceManager:
             self.processes.pop(name, None)
             return next(x for x in self.list() if x["name"] == name)
 
-    def logs(self, name: str) -> str:
+    def logs(self, name: str) -> dict:
+        """Logs for a service or the gateway, with where they came from.
+
+        Processes this dashboard started log to files under logs_dir. Anything else
+        running on the port (typically systemd) logs to the journal instead.
+        """
         with self.lock:
-            if name != GATEWAY_LOG:
-                self._find(name)
+            if name == GATEWAY_LOG:
+                settings = load_gateway(self.path)
+                running_here = self.gateway_process is not None and self.gateway_process.poll() is None
+                external = not running_here and _listening(settings.host, settings.port)
+                unit, tag = load_dashboard(self.path).gateway_unit, None
+            else:
+                service = self._find(name)
+                external = self._state(name)[0] != "running" and _listening(service.host, service.port)
+                unit, tag = load_dashboard(self.path).services_unit, name
             path = self.logs_dir / f"{name}.log"
-            if not path.exists():
-                return "尚无日志。"
-            with path.open("rb") as stream:
-                stream.seek(0, os.SEEK_END)
-                stream.seek(max(0, stream.tell() - 65536))
-                return stream.read().decode("utf-8", errors="replace")
+        if external and unit:
+            try:
+                text = journal.read_unit(unit, tag)
+                return {"logs": text or "日志中暂无该服务的记录。", "source": "journal", "unit": unit}
+            except journal.JournalUnavailable as exc:
+                hint = (f"该服务由外部进程运行，日志在 systemd journal（{unit}）中，但管理台无法读取：{exc}\n"
+                        f"请在服务器上执行 journalctl -u {unit} -f 查看；"
+                        "或按部署教程为管理台授予读取 journal 的权限。")
+                return {"logs": hint, "source": "journal-unavailable", "unit": unit}
+        if not path.exists():
+            return {"logs": "尚无日志。", "source": "file"}
+        with path.open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            stream.seek(max(0, stream.tell() - 65536))
+            return {"logs": stream.read().decode("utf-8", errors="replace"), "source": "file"}
 
     def close(self) -> None:
         self.stop_gateway()
@@ -367,7 +389,7 @@ def create_app(config_path: str | Path, store: AuthStore | None = None) -> Starl
         try:
             if request.method == "GET":
                 if action == "logs":
-                    return JSONResponse({"logs": manager.logs(name)})
+                    return JSONResponse(await asyncio.to_thread(manager.logs, name))
                 if name is not None:
                     return JSONResponse({"error": "unsupported operation"}, status_code=405)
                 return JSONResponse({"services": manager.list()})
@@ -401,7 +423,7 @@ def create_app(config_path: str | Path, store: AuthStore | None = None) -> Starl
             if request.method == "GET" and action is None:
                 return JSONResponse(manager.gateway())
             if request.method == "GET" and action == "logs":
-                return JSONResponse({"logs": manager.logs(GATEWAY_LOG)})
+                return JSONResponse(await asyncio.to_thread(manager.logs, GATEWAY_LOG))
             check_write(request)
             if request.method == "POST" and action == "start":
                 return JSONResponse(manager.start_gateway())

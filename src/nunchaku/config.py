@@ -51,6 +51,13 @@ class Dashboard:
     secure_cookies: bool = False
     # Gateway URL as users reach it, shown in the dashboard and the key hand-off snippet.
     public_gateway_url: str = ""
+    # systemd units whose journal holds the logs of processes the dashboard didn't start.
+    # Defaults match the unit names in docs/deployment-guide.md; "" turns one off.
+    services_unit: str = "nunchaku-services"
+    gateway_unit: str = "nunchaku-gateway"
+
+
+UNIT_NAME = re.compile(r"^[A-Za-z0-9@_.:-]{1,128}$")
 
 
 def _hosts(value: object, where: str) -> tuple[str, ...]:
@@ -59,18 +66,28 @@ def _hosts(value: object, where: str) -> tuple[str, ...]:
     return tuple(value)
 
 
+def _unit(item: dict, field: str, default: str) -> str:
+    value = item.get(field, default)
+    if not isinstance(value, str) or (value and not UNIT_NAME.fullmatch(value)):
+        raise ValueError(f"dashboard: {field} must be a systemd unit name or \"\"")
+    return value
+
+
 def load_dashboard(path: str | Path) -> Dashboard:
     raw = json.loads(Path(path).expanduser().resolve().read_text(encoding="utf-8"))
     item = raw.get("dashboard", {}) if isinstance(raw, dict) else {}
-    if not isinstance(item, dict) or set(item) - {"allowed_hosts", "secure_cookies", "public_gateway_url"}:
-        raise ValueError("dashboard accepts allowed_hosts, secure_cookies, and public_gateway_url")
+    fields = {"allowed_hosts", "secure_cookies", "public_gateway_url", "services_unit", "gateway_unit"}
+    if not isinstance(item, dict) or set(item) - fields:
+        raise ValueError(f"dashboard accepts {', '.join(sorted(fields))}")
     secure = item.get("secure_cookies", False)
     if not isinstance(secure, bool):
         raise ValueError("dashboard: secure_cookies must be true or false")
     public = item.get("public_gateway_url", "")
     if not isinstance(public, str) or (public and not public.startswith(("http://", "https://"))):
         raise ValueError("dashboard: public_gateway_url must be an http(s) URL")
-    return Dashboard(_hosts(item.get("allowed_hosts", []), "dashboard"), secure, public)
+    return Dashboard(_hosts(item.get("allowed_hosts", []), "dashboard"), secure, public,
+                     _unit(item, "services_unit", Dashboard.services_unit),
+                     _unit(item, "gateway_unit", Dashboard.gateway_unit))
 
 
 def load_services(path: str | Path) -> list[Service]:
