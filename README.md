@@ -1,6 +1,6 @@
 # nunchaku
 
-把私有 Agent Skill 放在服务端执行，并以标准 MCP 工具提供给客户本地的 Codex、Claude Code 等 Agent。当前版本是一个可运行的 POC。详细设计见[架构说明](docs/architecture.md)；客户机器上的接入步骤见[客户端配置与使用手册](docs/client-setup.md)。
+把私有 Agent Skill 放在服务端执行，并以标准 MCP 工具提供给客户本地的 Codex、Claude Code 等 Agent。当前版本是一个可运行的 POC。详细设计见[架构说明](docs/architecture.md)；客户机器上的接入步骤见[客户端配置与使用手册](docs/client-setup.md)；在公司服务器私有化部署、让员工通过 AIKO 使用，见[私有化部署与使用教程](docs/deployment-guide.md)。
 
 ## 架构
 
