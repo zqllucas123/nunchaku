@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -134,6 +135,58 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
                 capture_output=True, text=True, timeout=60)
             self.assertEqual(completed.returncode, 2)
             self.assertIn("cannot reach gateway", completed.stderr)
+
+    async def test_bridge_sends_bearer_token(self) -> None:
+        import uvicorn
+
+        from nunchaku.config import Gateway
+        from nunchaku.gateway import build_gateway
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "services.json"
+            config.write_text(json.dumps({"services": []}), encoding="utf-8")
+            inner = build_gateway(config, Gateway())
+
+            async def guarded(scope, receive, send):
+                # Stand-in for the Nginx Bearer check in front of the gateway.
+                if scope["type"] == "http" and dict(scope["headers"]).get(b"authorization") != b"Bearer s3cret":
+                    await send({"type": "http.response.start", "status": 401, "headers": []})
+                    await send({"type": "http.response.body", "body": b""})
+                    return
+                await inner(scope, receive, send)
+
+            port = _free_port()
+            server = uvicorn.Server(uvicorn.Config(guarded, host="127.0.0.1", port=port, log_level="error"))
+            task = asyncio.create_task(server.serve())
+            try:
+                while not server.started:
+                    await asyncio.sleep(0.05)
+                url = f"http://127.0.0.1:{port}/mcp"
+                base = [sys.executable, "-m", "nunchaku", "bridge", "--url", url, "--root", directory]
+
+                def run(token: str | None) -> subprocess.CompletedProcess:
+                    env = {k: v for k, v in os.environ.items() if k != "NUNCHAKU_TOKEN"}
+                    if token:
+                        env["NUNCHAKU_TOKEN"] = token
+                    return subprocess.run(base, capture_output=True, text=True, env=env,
+                                          stdin=subprocess.DEVNULL, timeout=60)
+
+                denied = await asyncio.to_thread(run, None)
+                self.assertEqual(denied.returncode, 2)
+                self.assertIn("401 Unauthorized", denied.stderr)
+                wrong = await asyncio.to_thread(run, "nope")
+                self.assertIn("401 Unauthorized", wrong.stderr)
+
+                env = {**os.environ, "NUNCHAKU_TOKEN": "s3cret"}
+                parameters = StdioServerParameters(command=sys.executable, args=base[1:], env=env)
+                async with stdio_client(parameters) as (read, write):
+                    async with ClientSession(read, write) as client:
+                        await client.initialize()
+                        self.assertEqual((await client.list_tools()).tools, [])
+            finally:
+                server.should_exit = True
+                await task
 
 
 class GatewayConfigTests(unittest.TestCase):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import multiprocessing
+import os
 import sys
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -148,7 +149,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.action == "bridge" and args.url:
             from .bridge import serve_gateway_bridge
-            serve_gateway_bridge(_validate_url(args.url), Path(args.root))
+            # Read from the environment so the token stays out of process listings.
+            token = os.environ.get("NUNCHAKU_TOKEN", "").strip() or None
+            serve_gateway_bridge(_validate_url(args.url), Path(args.root), token)
             return 0
         if args.action == "bridge":
             connector = json.loads(Path(args.connector).expanduser().read_text(encoding="utf-8"))

@@ -119,9 +119,13 @@ def _apply(root: Path, result: SkillResult, apply_changes: bool) -> BridgeResult
     )
 
 
+def _headers(token: str | None) -> dict[str, str] | None:
+    return {"Authorization": f"Bearer {token}"} if token else None
+
+
 async def invoke_remote(url: str, timeout_seconds: int, task: str, files: list[dict[str, str]],
-                        tool: str = "run_skill") -> SkillResult:
-    async with httpx.AsyncClient(timeout=timeout_seconds + 10) as http_client:
+                        tool: str = "run_skill", token: str | None = None) -> SkillResult:
+    async with httpx.AsyncClient(timeout=timeout_seconds + 10, headers=_headers(token)) as http_client:
         async with streamable_http_client(url, http_client=http_client) as (read, write, _):
             async with ClientSession(read, write) as client:
                 await client.initialize()
@@ -160,14 +164,14 @@ def _check_root(root: Path) -> Path:
 
 
 def _register(mcp: FastMCP, root: Path, url: str, local_name: str, remote_tool: str,
-              service: str, description: str, timeout_seconds: int) -> None:
+              service: str, description: str, timeout_seconds: int, token: str | None = None) -> None:
     async def execute(task: str, paths: list[str] | None = None, apply_changes: bool = True) -> BridgeResult:
         files = _snapshot(root, paths or [])
         LOG.info("[%s] call started: %d file(s) %s, apply_changes=%s, task=%r",
                  service, len(files), [item["path"] for item in files], apply_changes, preview(task))
         started = time.monotonic()
         try:
-            remote = await invoke_remote(url, timeout_seconds, task, files, remote_tool)
+            remote = await invoke_remote(url, timeout_seconds, task, files, remote_tool, token)
         except Exception as exc:
             LOG.error("[%s] remote call failed after %.1fs: %s: %s",
                       service, time.monotonic() - started, type(exc).__name__, str(exc)[:400])
@@ -197,15 +201,15 @@ def _register(mcp: FastMCP, root: Path, url: str, local_name: str, remote_tool: 
     )
 
 
-async def discover(url: str) -> list[types.Tool]:
-    async with httpx.AsyncClient(timeout=30) as http_client:
+async def discover(url: str, token: str | None = None) -> list[types.Tool]:
+    async with httpx.AsyncClient(timeout=30, headers=_headers(token)) as http_client:
         async with streamable_http_client(url, http_client=http_client) as (read, write, _):
             async with ClientSession(read, write) as client:
                 await client.initialize()
                 return (await client.list_tools()).tools
 
 
-def build_gateway_bridge(url: str, root: Path, tools: list[types.Tool]) -> FastMCP:
+def build_gateway_bridge(url: str, root: Path, tools: list[types.Tool], token: str | None = None) -> FastMCP:
     """Mirror every gateway tool locally, swapping file contents for project-relative paths."""
     root = _check_root(root)
     mcp = FastMCP(
@@ -224,7 +228,7 @@ def build_gateway_bridge(url: str, root: Path, tools: list[types.Tool]) -> FastM
         if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= 3600:
             timeout = 180
         _register(mcp, root, url, tool.name, tool.name, str(info.get("service", tool.name)),
-                  str(info.get("description", "")), timeout + 15)
+                  str(info.get("description", "")), timeout + 15, token)
     return mcp
 
 
@@ -232,13 +236,25 @@ def serve_bridge(name: str, description: str, url: str, root: Path, timeout_seco
     build_bridge(name, description, url, root, timeout_seconds).run(transport="stdio")
 
 
-def serve_gateway_bridge(url: str, root: Path) -> None:
+def serve_gateway_bridge(url: str, root: Path, token: str | None = None) -> None:
     root = _check_root(root)
-    LOG.info("bridge starting: gateway=%s root=%s", url, root)
+    LOG.info("bridge starting: gateway=%s root=%s token=%s", url, root, "set" if token else "none")
     try:
-        tools = anyio.run(discover, url)
+        tools = anyio.run(discover, url, token)
     except Exception as exc:
-        raise OSError(f"cannot reach gateway {url}: {exc}") from exc
+        raise OSError(f"cannot reach gateway {url}: {_explain(exc)}") from exc
     names = [tool.name for tool in tools if (tool.meta or {}).get(META_KEY)]
     LOG.info("bridge discovered %d service tool(s): %s", len(names), names or "none")
-    build_gateway_bridge(url, root, tools).run(transport="stdio")
+    build_gateway_bridge(url, root, tools, token).run(transport="stdio")
+
+
+def _explain(exc: BaseException) -> str:
+    """Unwrap ExceptionGroups and name the usual HTTP failures."""
+    while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+        exc = exc.exceptions[0]
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        if status == 401:
+            return "401 Unauthorized: check NUNCHAKU_TOKEN"
+        return f"HTTP {status}"
+    return f"{type(exc).__name__}: {exc}"
