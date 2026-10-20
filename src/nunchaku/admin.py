@@ -42,6 +42,9 @@ PUBLIC_ASSETS = {"style.css", "login.js"}
 def _entry(service: Service) -> dict:
     result = asdict(service)
     result["skill"] = str(service.skill)
+    # asdict keeps tuples; parse_services expects JSON shapes, so args must round-trip as a list.
+    if service.args is not None:
+        result["args"] = list(service.args)
     return result
 
 

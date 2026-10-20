@@ -10,7 +10,7 @@ from pathlib import Path
 
 import httpx
 
-from nunchaku.admin import create_app
+from nunchaku.admin import ServiceManager, create_app
 from nunchaku.auth import AuthStore, auth_path
 from nunchaku.config import load_services
 
@@ -84,6 +84,30 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
                 deleted = await client.delete("/api/services/private-demo", headers={"Content-Type": "application/json"})
                 self.assertEqual(deleted.status_code, 204)
                 self.assertEqual(load_services(config), [])
+
+
+class CustomEngineSaveTests(unittest.TestCase):
+    def test_adding_a_service_next_to_an_existing_custom_engine(self) -> None:
+        # Regression: existing custom-engine args were re-validated as tuples and rejected.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            skill = root / "skill"
+            skill.mkdir()
+            (skill / "SKILL.md").write_text("x", encoding="utf-8")
+            config = root / "services.json"
+            first = {"name": "md2docx", "description": "A", "skill": str(skill), "engine": "custom",
+                     "command": "aiko", "args": ["--ci", "-p", "-"], "port": 18771}
+            config.write_text(json.dumps({"services": [first]}), encoding="utf-8")
+            manager = ServiceManager(config)
+            manager.save({"name": "testcase-gen", "description": "B", "skill": str(skill), "engine": "custom",
+                          "command": "aiko", "args": ["-p", "-"], "host": "127.0.0.1", "port": 18772,
+                          "timeout_seconds": 180})
+            # Editing the existing one goes through the same path.
+            manager.save({**first, "description": "A2"}, original_name="md2docx")
+            saved = json.loads(config.read_text(encoding="utf-8"))["services"]
+            self.assertEqual([s["name"] for s in saved], ["md2docx", "testcase-gen"])
+            self.assertEqual(saved[0]["args"], ["--ci", "-p", "-"])
+            self.assertEqual(load_services(config)[1].args, ("-p", "-"))
 
 
 if __name__ == "__main__":
