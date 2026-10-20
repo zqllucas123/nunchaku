@@ -65,10 +65,10 @@ flowchart LR
 
 访问控制分两层：
 
-| 对象 | 方式 | 说明 |
-|---|---|---|
-| 管理台 | 管理员账号登录 | 只有管理员能登录；账号在服务器上用命令行创建（第 4 章） |
-| 网关（员工调用服务） | Service Key | 管理员在管理台为每位使用者生成，并限定可访问的服务（第 4.3 节） |
+| 对象                 | 方式           | 说明                                                            |
+| -------------------- | -------------- | --------------------------------------------------------------- |
+| 管理台               | 管理员账号登录 | 只有管理员能登录；账号在服务器上用命令行创建（第 4 章）         |
+| 网关（员工调用服务） | Service Key    | 管理员在管理台为每位使用者生成，并限定可访问的服务（第 4.3 节） |
 
 部署时还须注意：
 
@@ -150,21 +150,21 @@ sudo chmod -R o-rwx /srv/private-skills
 
 字段说明：
 
-| 字段 | 说明 |
-| --- | --- |
-| `gateway.host` | 用 Nginx 时保持 `127.0.0.1`；网关直接对内网开放时改成 `0.0.0.0` |
-| `gateway.port` | 网关端口，不能和任何服务重复 |
-| `gateway.auth` | 是否要求 Service Key，默认 `true`。**只在仅本机访问的开发环境**才设为 `false` |
-| `dashboard.allowed_hosts` | 经 Nginx 访问管理台时，浏览器地址栏里的主机名（带非标准端口时写 `host:port`）。不在列表里的 Host 会被拒绝 |
-| `dashboard.secure_cookies` | 管理台走 HTTPS 时设为 `true`，登录 Cookie 只在 HTTPS 下发送 |
-| `dashboard.public_gateway_url` | 员工使用的网关地址。管理台会显示它，并写进生成 Key 时给出的配置示例 |
-| `name` | 服务名，也是员工在 AIKO 里看到的**工具名**。小写字母开头，只能含小写字母、数字、`-`、`_`。在管理台改名时，各 Service Key 的授权会自动跟随 |
-| `description` | **非常重要**。AIKO 靠这段话判断什么时候调用这个服务，请写清楚"做什么、输入什么、产出什么" |
-| `skill` | 私有 Skill 目录 |
-| `engine` | `codex`、`claude`、`hermes` 或 `custom` |
-| `command` / `args` | 自定义引擎的可执行文件和参数。参数里可用 `{prompt}`、`{workspace}`、`{output}`、`{skill}` 占位符；不写 `{prompt}` 时提示词从 stdin 传入 |
-| `port` | 服务自己的端口，每个服务不同 |
-| `timeout_seconds` | 单次执行上限。自定义引擎自身的超时（如上面的 `--timeout 170`）应略小于它 |
+| 字段                             | 说明                                                                                                                                                |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `gateway.host`                 | 用 Nginx 时保持 `127.0.0.1`；网关直接对内网开放时改成 `0.0.0.0`                                                                                 |
+| `gateway.port`                 | 网关端口，不能和任何服务重复                                                                                                                        |
+| `gateway.auth`                 | 是否要求 Service Key，默认 `true`。**只在仅本机访问的开发环境**才设为 `false`                                                             |
+| `dashboard.allowed_hosts`      | 经 Nginx 访问管理台时，浏览器地址栏里的主机名（带非标准端口时写 `host:port`）。不在列表里的 Host 会被拒绝                                         |
+| `dashboard.secure_cookies`     | 管理台走 HTTPS 时设为 `true`，登录 Cookie 只在 HTTPS 下发送                                                                                       |
+| `dashboard.public_gateway_url` | 员工使用的网关地址。管理台会显示它，并写进生成 Key 时给出的配置示例                                                                                 |
+| `name`                         | 服务名，也是员工在 AIKO 里看到的**工具名**。小写字母开头，只能含小写字母、数字、`-`、`_`。在管理台改名时，各 Service Key 的授权会自动跟随 |
+| `description`                  | **非常重要**。AIKO 靠这段话判断什么时候调用这个服务，请写清楚"做什么、输入什么、产出什么"                                                     |
+| `skill`                        | 私有 Skill 目录                                                                                                                                     |
+| `engine`                       | `codex`、`claude`、`hermes` 或 `custom`                                                                                                     |
+| `command` / `args`           | 自定义引擎的可执行文件和参数。参数里可用 `{prompt}`、`{workspace}`、`{output}`、`{skill}` 占位符；不写 `{prompt}` 时提示词从 stdin 传入   |
+| `port`                         | 服务自己的端口，每个服务不同                                                                                                                        |
+| `timeout_seconds`              | 单次执行上限。自定义引擎自身的超时（如上面的 `--timeout 170`）应略小于它                                                                          |
 
 管理员账号和 Service Key 不在这个文件里，而是保存在同目录的 `.nunchaku/auth.db`（SQLite，权限 600）。**备份时请一并备份这个文件**；只保存哈希，不含明文 Key 和密码。
 
@@ -608,11 +608,11 @@ sudo systemctl restart nunchaku-services nunchaku-gateway nunchaku-dashboard
 
 ### 7.4 日志
 
-| 进程         | 查看方式                                                                                 |
-| ------------ | ---------------------------------------------------------------------------------------- |
+| 进程         | 查看方式                                                                                                                      |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------- |
 | 服务进程     | 管理台中选中该服务看「运行日志」；或 `journalctl -u nunchaku-services -f`；用管理台启动时在 `.nunchaku/logs/<服务名>.log` |
-| 网关         | 管理台网关卡片的「查看日志」；或 `journalctl -u nunchaku-gateway -f`；用管理台启动时在 `.nunchaku/logs/_gateway.log`  |
-| 员工端桥接器 | 写到 stderr，在 AIKO 的 MCP 日志中查看                                                   |
+| 网关         | 管理台网关卡片的「查看日志」；或 `journalctl -u nunchaku-gateway -f`；用管理台启动时在 `.nunchaku/logs/_gateway.log`      |
+| 员工端桥接器 | 写到 stderr，在 AIKO 的 MCP 日志中查看                                                                                        |
 
 一次正常调用在服务端的日志大致如下：
 
