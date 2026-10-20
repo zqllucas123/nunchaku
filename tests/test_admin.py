@@ -109,6 +109,65 @@ class CustomEngineSaveTests(unittest.TestCase):
             self.assertEqual(saved[0]["args"], ["--ci", "-p", "-"])
             self.assertEqual(load_services(config)[1].args, ("-p", "-"))
 
+    def _port_manager(self, root: Path, services: list[dict] | None = None) -> tuple[ServiceManager, Path]:
+        skill = root / "skill"
+        skill.mkdir()
+        (skill / "SKILL.md").write_text("x", encoding="utf-8")
+        config = root / "services.json"
+        config.write_text(json.dumps({"services": services or []}), encoding="utf-8")
+        return ServiceManager(config), skill
+
+    def test_new_service_on_busy_port_gets_a_free_one(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, socket.socket() as holder:
+            holder.bind(("127.0.0.1", 0))
+            holder.listen()
+            busy = holder.getsockname()[1]
+            manager, skill = self._port_manager(Path(directory))
+            saved = manager.save({"name": "taken", "description": "B", "skill": str(skill), "engine": "codex",
+                                  "host": "127.0.0.1", "port": busy, "timeout_seconds": 180})
+            self.assertEqual(saved["requested_port"], busy)
+            self.assertNotEqual(saved["port"], busy)
+            self.assertEqual(manager.services[0].port, saved["port"])
+
+    def test_new_service_skips_ports_claimed_in_config(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager, skill = self._port_manager(root)
+            base = {"description": "B", "skill": str(skill), "engine": "codex", "host": "127.0.0.1",
+                    "timeout_seconds": 180}
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", 0))
+                port = probe.getsockname()[1]
+            first = manager.save({**base, "name": "first", "port": port})
+            self.assertNotIn("requested_port", first)
+            second = manager.save({**base, "name": "second", "port": port})
+            self.assertEqual(second["requested_port"], port)
+            self.assertNotEqual(second["port"], port)
+
+    def test_editing_to_a_busy_port_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, socket.socket() as holder:
+            holder.bind(("127.0.0.1", 0))
+            holder.listen()
+            busy = holder.getsockname()[1]
+            manager, skill = self._port_manager(Path(directory))
+            item = {"name": "svc", "description": "B", "skill": str(skill), "engine": "codex",
+                    "host": "127.0.0.1", "port": busy + 1 if busy < 65535 else busy - 1, "timeout_seconds": 180}
+            manager.save(item)
+            with self.assertRaisesRegex(ValueError, "already in use"):
+                manager.save({**item, "port": busy}, "svc")
+
+
+class RemoteErrorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unreachable_backend_names_the_cause(self) -> None:
+        from nunchaku.bridge import invoke_remote
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        with self.assertRaises(RuntimeError) as caught:
+            await invoke_remote(f"http://127.0.0.1:{port}/mcp", 5, "x", [])
+        self.assertIn("cannot reach", str(caught.exception))
+        self.assertNotIn("TaskGroup", str(caught.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

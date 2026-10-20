@@ -245,7 +245,19 @@ WantedBy=multi-user.target
 
 `SupplementaryGroups=systemd-journal` 只作用于管理台这一个进程，服务进程和网关没有这个权限。不加这一行，管理台仍可使用，只是「运行日志」面板会提示改用 `journalctl` 查看。管理台默认读取 `nunchaku-services`、`nunchaku-gateway` 两个单元的日志；如果你的单元名不同，在 `services.json` 的 `dashboard` 段用 `services_unit`、`gateway_unit` 指定，设为 `""` 表示不读取。
 
-`uv` 的路径以 `which uv` 的结果为准。执行引擎需要的环境变量（如模型 API Key）用 `Environment=` 或 `EnvironmentFile=` 加进 `nunchaku-services.service`。
+`uv` 的路径以 `which uv` 的结果为准。执行引擎需要的环境变量（如模型 API Key、`PATH`、引擎配置目录）用 `Environment=` 或 `EnvironmentFile=` 加进 `nunchaku-services.service`，**并且同样加进 `nunchaku-dashboard.service`**：在管理台点「启动」的服务是管理台的子进程，继承的是管理台的环境。`nunchaku-services` 只运行它启动时配置里已有的服务，之后在管理台新增的服务都由管理台启动；管理台缺少这些变量时，引擎会直接退出，员工侧看到 `custom exited 1`。
+
+推荐用 drop-in 文件给管理台补上，内容与 `nunchaku-services.service` 保持一致：
+
+```ini
+# /etc/systemd/system/nunchaku-dashboard.service.d/engine.conf
+[Service]
+EnvironmentFile=/etc/nunchaku/engine.env
+Environment=PATH=/opt/nunchaku/skill-venv/bin:/usr/local/bin:/usr/bin:/bin
+PrivateTmp=true
+```
+
+修改后执行 `sudo systemctl daemon-reload && sudo systemctl restart nunchaku-dashboard`，再在管理台重新启动相关服务。
 
 创建第一个管理员（以服务账号身份执行，确保 `auth.db` 归它所有；密码交互输入，不会进入命令行历史）：
 

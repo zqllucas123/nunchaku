@@ -197,8 +197,12 @@ async function saveService(event) {
     state.selected = saved.name;
     $("#service-dialog").close();
     await refresh();
-    toast(isEdit ? "服务配置已更新" : "服务已创建，可以启动了");
-  } catch (error) { toast(error.message, true); }
+    if (saved.requested_port) toast(`端口 ${saved.requested_port} 已被占用，已自动分配端口 ${saved.port}。服务已创建，可以启动了`);
+    else toast(isEdit ? "服务配置已更新" : "服务已创建，可以启动了");
+  } catch (error) {
+    const busy = error.message.match(/^port (\d+) is already in use/);
+    toast(busy ? `端口 ${busy[1]} 已被其他程序占用，请换一个端口` : error.message, true);
+  }
   finally { state.busy = false; }
 }
 

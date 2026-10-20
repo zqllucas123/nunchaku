@@ -130,6 +130,7 @@ class ServiceManager:
         allowed = {"name", "description", "skill", "engine", "host", "port", "command", "timeout_seconds", "args"}
         if set(item) - allowed:
             raise ValueError("unknown service field")
+        requested_port = None
         with self.lock:
             if original_name is not None:
                 self._find(original_name)
@@ -140,16 +141,54 @@ class ServiceManager:
             else:
                 updated = list(self.services)
                 insert_at = len(updated)
+                port = self._free_port(item.get("host"), item.get("port"))
+                if port is not None:
+                    requested_port, item = item["port"], {**item, "port": port}
             candidates = [_entry(s) for s in updated]
             candidates.insert(insert_at, item)
             validated = parse_services({"services": candidates}, self.path)
+            saved = validated[insert_at]
+            previous = next((s for s in self.services if s.name == original_name), None)
+            # A port held by another program (e.g. Nginx) would pass the gateway's health probe
+            # and every call would then fail, so refuse it up front.
+            if (previous is None or previous.port != saved.port) and _listening(saved.host, saved.port):
+                raise ValueError(f"port {saved.port} is already in use by another program")
             self._write(validated)
             self.services = validated
             if original_name and original_name != item.get("name"):
                 self.processes.pop(original_name, None)
                 # Grants are stored by name, so carry them over to the new name.
                 self.store.rename_service(original_name, item["name"])
-            return next(entry for entry in self.list() if entry["name"] == item["name"])
+            result = next(entry for entry in self.list() if entry["name"] == item["name"])
+            if requested_port is not None:
+                result["requested_port"] = requested_port
+            return result
+
+    def _reserved_ports(self) -> set[int]:
+        """Ports already claimed in the config, whether or not anything is listening on them yet."""
+        reserved = {s.port for s in self.services}
+        try:
+            reserved.add(load_gateway(self.path).port)
+        except (OSError, ValueError):
+            pass
+        return reserved
+
+    def _free_port(self, host: object, port: object) -> int | None:
+        """For a new service: a replacement when the requested port is taken, else None.
+
+        Malformed values return None so the normal validation reports them.
+        """
+        if not isinstance(host, str) or not host or isinstance(port, bool) or not isinstance(port, int) \
+                or not 1 <= port <= 65535:
+            return None
+        reserved = self._reserved_ports()
+        if port not in reserved and not _listening(host, port):
+            return None
+        # Stay near the port the admin chose; cap the scan since each probe can wait up to 0.2 s.
+        for candidate in range(port + 1, min(port + 200, 65536)):
+            if candidate not in reserved and not _listening(host, candidate):
+                return candidate
+        raise ValueError(f"port {port} is already in use and no free port was found")
 
     def delete(self, name: str) -> None:
         with self.lock:
