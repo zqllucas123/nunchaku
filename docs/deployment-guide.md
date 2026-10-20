@@ -82,7 +82,7 @@ flowchart LR
 
 ## 2. 服务器安装
 
-以下以 Linux、安装目录 `/opt/nunchaku` 为例。Windows 服务器的差异见 2.5。
+以下以 Linux、安装目录 `/opt/nunchaku` 为例。Windows 服务器的差异见 2.7。
 
 ### 2.1 安装 uv 和代码
 
@@ -245,7 +245,7 @@ WantedBy=multi-user.target
 
 `SupplementaryGroups=systemd-journal` 只作用于管理台这一个进程，服务进程和网关没有这个权限。不加这一行，管理台仍可使用，只是「运行日志」面板会提示改用 `journalctl` 查看。管理台默认读取 `nunchaku-services`、`nunchaku-gateway` 两个单元的日志；如果你的单元名不同，在 `services.json` 的 `dashboard` 段用 `services_unit`、`gateway_unit` 指定，设为 `""` 表示不读取。
 
-`uv` 的路径以 `which uv` 的结果为准。执行引擎需要的环境变量（如模型 API Key、`PATH`、引擎配置目录）用 `Environment=` 或 `EnvironmentFile=` 加进 `nunchaku-services.service`，**并且同样加进 `nunchaku-dashboard.service`**：在管理台点「启动」的服务是管理台的子进程，继承的是管理台的环境。`nunchaku-services` 只运行它启动时配置里已有的服务，之后在管理台新增的服务都由管理台启动；管理台缺少这些变量时，引擎会直接退出，员工侧看到 `custom exited 1`。
+`uv` 的路径以 `which uv` 的结果为准。执行引擎需要的环境变量（如模型 API Key、`PATH`、引擎配置目录）用 `Environment=` 或 `EnvironmentFile=` 加进 `nunchaku-services.service`，**并且同样加进 `nunchaku-dashboard.service`**：在管理台点「启动」的服务是管理台的子进程，继承的是管理台的环境。`nunchaku-services` 只运行它启动时配置里已有的服务，之后在管理台新增的服务都由管理台启动（重启单元时端口已被占用的会被跳过，见 2.5）；管理台缺少这些变量时，引擎会直接退出，员工侧看到 `custom exited 1`。
 
 推荐用 drop-in 文件给管理台补上，内容与 `nunchaku-services.service` 保持一致：
 
@@ -276,7 +276,42 @@ journalctl -u nunchaku-gateway -f        # 查看网关日志
 
 > 也可以不用 systemd，改用管理台手动启停服务。但管理台退出时会停掉它启动的所有进程，**正式环境请用 systemd**。由 systemd 运行的服务在管理台中显示为「外部运行」。
 
-### 2.5 Windows 服务器的差异
+### 2.5 一个服务只能有一个主管
+
+同一个 `host:port` 只能有一个进程在跑。nunchaku 有两条启动路径，两条都守住这条规则，所以「管理台启动过、随后重启 `nunchaku-services`」这个组合不会互相踩：
+
+- **`nunchaku-services`（`serve-all`）** 只运行它**启动那一刻**配置里已有的服务（见 2.4）。启动时它会先探测每个服务的端口，**已经在监听的会被跳过并打警告**，不会去抢。若硬抢，子进程会因 `[Errno 98] address already in use` 当场退出，而 systemd 单元仍是 active，端口就再也回不到原来的主人手里。
+- **管理台**新增或启动服务前会检查端口，已被占用时直接报 `port <n> is already in use`，不会硬起（见 3.2）。
+
+被跳过的服务**不算失败**（进程退出码仍为 0），否则 `Restart=on-failure` 会变成 5 秒一轮的重启循环。重启时的输出形如：
+
+```text
+nunchaku: svc is already served on 127.0.0.1:8770; not starting a second copy. ...
+nunchaku: serving other on 127.0.0.1:8771
+```
+
+要让这个单元重新接管某个服务，先在管理台把它停掉，再重启单元。排查端口到底归谁管：
+
+```bash
+systemctl status nunchaku-services      # 列出该单元真正在跑的服务
+ss -lptn 'sport = :8770'                # 谁在监听这个端口
+```
+
+### 2.6 调整单次运行的产出文件数上限
+
+一个服务单次运行留在工作目录里的文件数，默认上限是 1000。这不是硬顶：改环境变量即可，不必改代码，升级也不会被覆盖。
+
+```ini
+# /etc/systemd/system/nunchaku-services.service.d/limits.conf
+[Service]
+Environment=NUNCHAKU_MAX_OUTPUT_FILES=2000
+```
+
+改完执行 `sudo systemctl daemon-reload && sudo systemctl restart nunchaku-services`。
+
+客户端可上传的文件数（50）是另一回事，属于对外契约，**不受这个变量影响**。填了非法值（空、0、负数、非整数）时服务会保留默认值并打一条警告，不会因此起不来。真正的护栏是字节预算（单文件 10 MB、单次合计 20 MB），它不随这个变量放宽。
+
+### 2.7 Windows 服务器的差异
 
 - 路径用 `D:\\nunchaku\\...` 形式，JSON 里反斜杠要写两遍。
 - 用 [NSSM](https://nssm.cc/) 把两条命令注册成 Windows 服务：
@@ -403,6 +438,8 @@ nunchaku --config services.json admin remove <用户名>
 ### 4.2 服务管理
 
 在「服务管理」页可以新增、编辑、删除服务，查看网关地址。由 systemd 运行的服务显示为「外部运行」，不能在页面上启停；修改配置后需在服务器上 `systemctl restart nunchaku-services` 才生效。它们的「运行日志」读取自 systemd journal（需要 2.4 中的 `SupplementaryGroups=systemd-journal`），面板标题旁会注明日志来源。
+
+端口是独占的：新增或启动服务时，若目标端口已被占用，页面会报 `port <n> is already in use` 并拒绝。反过来，如果你在管理台启动过一个服务，之后又重启 `nunchaku-services`，单元会认出该端口已有人服务并跳过它（见 2.5）——这时该服务归管理台管，改配置要在管理台重新启动它。
 
 ### 4.3 Service Key
 
@@ -602,7 +639,7 @@ Write-Host "  env:     NUNCHAKU_SERVICE_KEY = <管理员发给你的 Service Key
 
 ### 7.2 修改或下线服务
 
-- 修改描述、超时等：改 `services.json` 后 `systemctl restart nunchaku-services`。
+- 修改描述、超时等：改 `services.json` 后 `systemctl restart nunchaku-services`。若该服务是**从管理台启动**的，单元不认识它（它不在单元的 cgroup 里），重启单元会跳过它，需在管理台重新启动该服务才生效（见 2.5）。
 - 改名、下线**请在管理台操作**：管理台会同步更新各 Service Key 的授权；直接手改 `services.json` 不会。员工下次重连时该工具消失；在此之前调用会得到 `unknown service`。
 
 ### 7.3 升级 nunchaku
@@ -615,6 +652,8 @@ git pull
 uv sync
 sudo systemctl restart nunchaku-services nunchaku-gateway nunchaku-dashboard
 ```
+
+`git pull` 只动 `/opt/nunchaku` 下的代码，不碰 `/etc/systemd/system/*.service.d/` 里的 drop-in，所以你在那里设的 `NUNCHAKU_MAX_OUTPUT_FILES` 等会照常生效，不会被升级覆盖（见 2.6）。
 
 员工电脑：重新构建并分发 wheel，员工执行 `uv tool install --force <新 wheel>`。**升级前必须先退出 AIKO**，否则会报"拒绝访问"（见 8.1）。
 

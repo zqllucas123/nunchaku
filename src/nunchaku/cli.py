@@ -5,6 +5,7 @@ import getpass
 import json
 import multiprocessing
 import os
+import socket
 import sys
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -88,6 +89,31 @@ def _codex_metadata(service: Service, url: str, mode: str) -> str:
         "      transport: streamable_http\n"
         f"      url: {json.dumps(url)}\n"
     )
+
+
+def _listening(host: str, port: int) -> bool:
+    """True when something already serves this port, e.g. a service started from the dashboard."""
+    host = "127.0.0.1" if host in {"0.0.0.0", "::", ""} else host
+    try:
+        with socket.create_connection((host, port), timeout=0.2):
+            return True
+    except OSError:
+        return False
+
+
+def _split_by_owner(services: list[Service]) -> tuple[list[Service], list[Service]]:
+    """Split services into (free to serve here, already served elsewhere).
+
+    serve-all runs the services in the config as of unit start. A service that someone
+    else already serves — typically one the dashboard started after a config edit — must
+    not be spawned again: uvicorn would die with EADDRINUSE while the unit still looked
+    healthy, and the port would never come back under its original owner.
+    """
+    free: list[Service] = []
+    taken: list[Service] = []
+    for service in services:
+        (taken if _listening(service.host, service.port) else free).append(service)
+    return free, taken
 
 
 def _validate_url(value: str) -> str:
@@ -240,7 +266,18 @@ def main(argv: list[str] | None = None) -> int:
             }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             print(destination.resolve())
             return 0
-        processes = [multiprocessing.Process(target=serve, args=(service,), name=service.name) for service in services]
+        serving, taken = _split_by_owner(services)
+        for service in taken:
+            print(f"nunchaku: {service.name} is already served on {service.host}:{service.port}; "
+                  f"not starting a second copy. Restart whatever owns that port to pick up config "
+                  f"changes, or stop it first if this unit should own the service.", file=sys.stderr)
+        if taken and not serving:
+            print("nunchaku: every configured service is already served elsewhere; "
+                  "nothing left for this unit to run.", file=sys.stderr)
+        if serving:
+            print("nunchaku: serving " + ", ".join(f"{s.name} on {s.host}:{s.port}" for s in serving), flush=True)
+        processes = [multiprocessing.Process(target=serve, args=(service,), name=service.name)
+                     for service in serving]
         for process in processes:
             process.start()
         try:

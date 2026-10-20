@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import hashlib
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,7 +11,7 @@ from unittest.mock import patch
 
 from nunchaku.bridge import _apply, _snapshot
 from nunchaku.config import Service, load_services
-from nunchaku.runner import _run_sync
+from nunchaku.runner import MAX_FILES, _int_env, _run_sync
 from nunchaku.server import SkillResult
 
 
@@ -69,6 +70,20 @@ class ConfigTests(unittest.TestCase):
 
 
 class RunnerTests(unittest.TestCase):
+    def test_int_env_override_is_optional_and_forgiving(self) -> None:
+        """The output limit is raisable by environment, so an upgrade never clobbers it."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("NUNCHAKU_TEST_LIMIT", None)
+            self.assertEqual(_int_env("NUNCHAKU_TEST_LIMIT", 1000), 1000)
+            os.environ["NUNCHAKU_TEST_LIMIT"] = "2500"
+            self.assertEqual(_int_env("NUNCHAKU_TEST_LIMIT", 1000), 2500)
+            # Junk must not take the service down: keep the default instead.
+            for junk in ["", "abc", "0", "-5", "1.5"]:
+                with self.subTest(junk=junk):
+                    os.environ["NUNCHAKU_TEST_LIMIT"] = junk
+                    self.assertEqual(_int_env("NUNCHAKU_TEST_LIMIT", 1000), 1000)
+            os.environ.pop("NUNCHAKU_TEST_LIMIT", None)
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -125,6 +140,32 @@ class RunnerTests(unittest.TestCase):
                      {"path": "a.bin", "content": "not base64!", "encoding": "base64"}]:
             with self.subTest(item=item), self.assertRaises(ValueError):
                 _run_sync(self.service, "task", [item])
+
+    def test_output_file_limit_is_independent_of_the_input_limit(self) -> None:
+        """A run may leave behind more files than a client is allowed to send.
+
+        Both limits used to be MAX_FILES, so a skill that writes one file per test case
+        hit "engine output exceeds POC size limit" at 50 even though the byte budget —
+        the limit that actually protects the server — was barely touched.
+        """
+        count = MAX_FILES + 10
+
+        def fake_run(command, **kwargs):
+            workspace = Path(kwargs["cwd"])
+            (workspace / "out").mkdir()
+            for index in range(count):
+                (workspace / f"out/case_{index:03d}.txt").write_text(f"case {index}")
+            return type("Result", (), {"returncode": 0, "stdout": "done", "stderr": ""})()
+
+        with patch("nunchaku.runner.subprocess.run", side_effect=fake_run):
+            result = _run_sync(self.service, "generate cases", [])
+        self.assertEqual(len(result["changed_files"]), count)
+
+    def test_input_file_count_is_still_capped(self) -> None:
+        with self.assertRaisesRegex(ValueError, "at most"):
+            _run_sync(self.service, "task", [
+                {"path": f"in_{index}.txt", "content": "x"} for index in range(MAX_FILES + 1)
+            ])
 
     def test_rejects_parent_and_reserved_paths(self) -> None:
         for name in ["../private/SKILL.md", "/etc/passwd", ".agents/skills/x", "a//b", "a\\b"]:

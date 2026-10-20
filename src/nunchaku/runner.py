@@ -18,7 +18,34 @@ from .log import logger, preview
 LOG = logger("runner")
 
 
+def _int_env(name: str, default: int) -> int:
+    """Read a positive integer override from the environment.
+
+    Lets an operator raise a limit without patching the source: set it in the unit's
+    EnvironmentFile and it survives upgrades. Junk values warn and keep the default
+    rather than taking the service down.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        LOG.warning("%s=%r is not an integer; falling back to %d", name, raw, default)
+        return default
+    if value < 1:
+        LOG.warning("%s=%r must be at least 1; falling back to %d", name, raw, default)
+        return default
+    return value
+
+
+# Inbound: how many files a client may send. Part of the published contract.
 MAX_FILES = 50
+# Outbound: how many files one run may leave behind in the workspace. This bounds a
+# different thing than MAX_FILES and so is a separate knob — a skill that writes one
+# file per test case legitimately returns far more than 50. The byte limits below are
+# the real protection; this is only a sanity bound.
+MAX_OUTPUT_FILES = _int_env("NUNCHAKU_MAX_OUTPUT_FILES", 1000)
 MAX_FILE_BYTES = 10_000_000
 MAX_TOTAL_BYTES = 20_000_000
 RESERVED_TOP = {".agents", ".claude", ".codex", ".git", ".nunchaku"}
@@ -89,7 +116,7 @@ def _collect_files(workspace: Path) -> dict[str, bytes]:
             relative = item.relative_to(workspace).as_posix()
             size = item.stat().st_size
             total += size
-            if size > MAX_FILE_BYTES or total > MAX_TOTAL_BYTES or len(result) >= MAX_FILES:
+            if size > MAX_FILE_BYTES or total > MAX_TOTAL_BYTES or len(result) >= MAX_OUTPUT_FILES:
                 raise ValueError("engine output exceeds POC size limit")
             result[relative] = item.read_bytes()
     return result
