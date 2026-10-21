@@ -28,7 +28,7 @@ flowchart LR
 
 | 项目                       | 示例                                                            | 用途                                                           |
 | -------------------------- | --------------------------------------------------------------- | -------------------------------------------------------------- |
-| 安装包（wheel）            | `nunchaku-0.1.0-py3-none-any.whl`，或离线用的 `wheels` 目录 | 安装本地 CLI                                                   |
+| 安装包（wheel）            | `nunchaku-0.1.1-py3-none-any.whl`，或离线用的 `wheels` 目录 | 安装本地 CLI                                                   |
 | 网关地址                   | `https://nunchaku.corp.example.com/mcp`                       | 桥接器连接的地址                                               |
 | Service Key                | `nk_xxxxxxxxxxxxxxxx`                                         | 你的个人访问凭据，决定你能用哪些服务                           |
 | HTTPS 证书（自签名时必需） | `server-10.0.0.20.crt`                                        | 网关用自签名或内部 CA 证书时，桥接器靠它验证服务器身份，见 2.3 |
@@ -67,7 +67,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 ```powershell
 # 能访问 PyPI 或内网镜像时（wheel 路径以管理员提供的为准）
-uv tool install \\fileserver\tools\nunchaku\nunchaku-0.1.0-py3-none-any.whl
+uv tool install \\fileserver\tools\nunchaku\nunchaku-0.1.1-py3-none-any.whl
 
 # 完全离线时（管理员提供整个 wheels 目录）
 uv tool install --offline --no-index --find-links \\fileserver\tools\nunchaku\wheels --python 3.12 nunchaku

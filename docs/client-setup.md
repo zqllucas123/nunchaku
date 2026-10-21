@@ -18,7 +18,7 @@
 ## 1. 安装 CLI
 
 ```bash
-uv tool install nunchaku-0.1.0-py3-none-any.whl
+uv tool install nunchaku-0.1.1-py3-none-any.whl
 nunchaku --help
 ```
 

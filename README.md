@@ -97,7 +97,7 @@ uv build
 给客户分发通用 `nunchaku` wheel 和上一步生成的公开连接 Skill；wheel 不包含真实私有 Skill。客户机器安装 wheel 后配置本地桥接器。以下以 Codex 为例（wheel 文件名以实际构建结果为准；命令在客户机器执行）：
 
 ```bash
-uv tool install dist/nunchaku-0.1.0-py3-none-any.whl
+uv tool install dist/nunchaku-0.1.1-py3-none-any.whl
 mkdir -p ~/.agents/skills
 cp -R /tmp/demo-polish-remote ~/.agents/skills/
 codex mcp add nunchaku-demo-polish -- nunchaku bridge \

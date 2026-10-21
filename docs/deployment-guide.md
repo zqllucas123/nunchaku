@@ -466,7 +466,7 @@ nunchaku --config services.json admin remove <用户名>
 ```bash
 cd /opt/nunchaku
 uv build --wheel
-ls dist/          # nunchaku-0.1.0-py3-none-any.whl
+ls dist/          # nunchaku-0.1.1-py3-none-any.whl
 ```
 
 把 wheel 放到员工能访问的共享位置，例如 `\\fileserver\tools\nunchaku\`。
@@ -475,11 +475,11 @@ ls dist/          # nunchaku-0.1.0-py3-none-any.whl
 
 ```powershell
 uv venv --python 3.12 .bundle
-uv pip install --python .bundle dist\nunchaku-0.1.0-py3-none-any.whl
+uv pip install --python .bundle dist\nunchaku-0.1.1-py3-none-any.whl
 uv pip freeze --python .bundle | Select-String -NotMatch nunchaku | Out-File -Encoding ascii deps.txt
 uv run --no-project --python 3.12 --with pip python -m pip download -r deps.txt -d wheels `
   --only-binary=:all: --platform win_amd64 --python-version 3.12 --implementation cp
-Copy-Item dist\nunchaku-0.1.0-py3-none-any.whl wheels\
+Copy-Item dist\nunchaku-0.1.1-py3-none-any.whl wheels\
 ```
 
 把整个 `wheels` 目录（约 30 个 wheel）复制到共享位置。有内网 PyPI 镜像时，在 `pip download` 后面加 `--index-url <镜像地址>`。员工电脑还需要 Python 3.12，可以由 IT 统一安装，或者把 `uv python install 3.12` 的结果一起分发。
@@ -490,7 +490,7 @@ Copy-Item dist\nunchaku-0.1.0-py3-none-any.whl wheels\
 
 ```powershell
 # 能访问 PyPI 或内网镜像时
-uv tool install \\fileserver\tools\nunchaku\nunchaku-0.1.0-py3-none-any.whl
+uv tool install \\fileserver\tools\nunchaku\nunchaku-0.1.1-py3-none-any.whl
 
 # 完全离线时（wheels 目录见 5.1）
 uv tool install --offline --no-index --find-links \\fileserver\tools\nunchaku\wheels --python 3.12 nunchaku
@@ -769,7 +769,7 @@ Service Key 缺失、写错、已停用或已过期。检查 MCP 配置 `env` �
 > 可以直接转发给员工。
 
 1. 向管理员申请 **Service Key**（形如 `nk_…`），它等同于你的个人账号，不要转借。
-2. 安装：`uv tool install \\fileserver\tools\nunchaku\nunchaku-0.1.0-py3-none-any.whl`
+2. 安装：`uv tool install \\fileserver\tools\nunchaku\nunchaku-0.1.1-py3-none-any.whl`
 3. 装 Skill：`nunchaku install-skill --path "$HOME\.sdw\skills"`
 4. AIKO → MCP → 「+」→ 名称 `nunchaku`，类型 STDIO，配置：
 
