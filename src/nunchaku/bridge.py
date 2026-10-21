@@ -125,15 +125,19 @@ def _headers(token: str | None) -> dict[str, str] | None:
 
 async def invoke_remote(url: str, timeout_seconds: int, task: str, files: list[dict[str, str]],
                         tool: str = "run_skill", token: str | None = None) -> SkillResult:
-    async with httpx.AsyncClient(timeout=timeout_seconds + 10, headers=_headers(token)) as http_client:
-        async with streamable_http_client(url, http_client=http_client) as (read, write, _):
-            async with ClientSession(read, write) as client:
-                await client.initialize()
-                response = await client.call_tool(
-                    tool,
-                    {"task": task, "files": files},
-                    read_timeout_seconds=timedelta(seconds=timeout_seconds + 10),
-                )
+    try:
+        async with httpx.AsyncClient(timeout=timeout_seconds + 10, headers=_headers(token)) as http_client:
+            async with streamable_http_client(url, http_client=http_client) as (read, write, _):
+                async with ClientSession(read, write) as client:
+                    await client.initialize()
+                    response = await client.call_tool(
+                        tool,
+                        {"task": task, "files": files},
+                        read_timeout_seconds=timedelta(seconds=timeout_seconds + 10),
+                    )
+    except Exception as exc:
+        # Transport failures arrive wrapped in an ExceptionGroup; surface the real cause.
+        raise RuntimeError(f"cannot reach {url}: {_explain(exc)}") from exc
     # Raise outside the client's task group, which would otherwise hide the message in an ExceptionGroup.
     if response.isError:
         detail = " ".join(getattr(item, "text", "") for item in response.content)
