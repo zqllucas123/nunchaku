@@ -26,12 +26,12 @@ flowchart LR
 
 ### 1.1 向管理员索取
 
-| 项目                 | 示例                                                            | 用途                                 |
-| -------------------- | --------------------------------------------------------------- | ------------------------------------ |
-| 安装包（wheel）      | `nunchaku-0.1.0-py3-none-any.whl`，或离线用的 `wheels` 目录 | 安装本地 CLI                         |
-| 网关地址             | `https://nunchaku.corp.example.com/mcp`                       | 桥接器连接的地址                     |
-| Service Key          | `nk_xxxxxxxxxxxxxxxx`                                         | 你的个人访问凭据，决定你能用哪些服务 |
-| HTTPS 证书（自签名时必需） | `server-10.0.0.20.crt`                              | 网关用自签名或内部 CA 证书时，桥接器靠它验证服务器身份，见 2.3 |
+| 项目                       | 示例                                                            | 用途                                                           |
+| -------------------------- | --------------------------------------------------------------- | -------------------------------------------------------------- |
+| 安装包（wheel）            | `nunchaku-0.1.0-py3-none-any.whl`，或离线用的 `wheels` 目录 | 安装本地 CLI                                                   |
+| 网关地址                   | `https://nunchaku.corp.example.com/mcp`                       | 桥接器连接的地址                                               |
+| Service Key                | `nk_xxxxxxxxxxxxxxxx`                                         | 你的个人访问凭据，决定你能用哪些服务                           |
+| HTTPS 证书（自签名时必需） | `server-10.0.0.20.crt`                                        | 网关用自签名或内部 CA 证书时，桥接器靠它验证服务器身份，见 2.3 |
 
 > Service Key 等同于你的个人账号密码：**不要转借，不要提交到代码仓库，不要发到群里**。怀疑泄露时，请管理员停用并重新生成。
 
@@ -123,7 +123,6 @@ nunchaku install-skill --path "$HOME\.sdw\skills"
    New-Item -ItemType Directory -Force "$HOME\.nunchaku" | Out-Null
    Copy-Item \\fileserver\tools\nunchaku\server-10.0.0.20.crt "$HOME\.nunchaku\"
    ```
-
 2. 在 MCP 配置的 `env` 里加上 `SSL_CERT_FILE`，指向这个文件的**完整路径**（用户名换成自己的），见第 3 章的示例。
 
 注意：
@@ -235,11 +234,11 @@ approval_mode = "approve"
 
 需要时加在 MCP 配置的 `env` 里：
 
-| 变量              | 何时需要                                                   | 示例                                   |
-| ----------------- | ---------------------------------------------------------- | -------------------------------------- |
-| `SSL_CERT_FILE` | 网关使用自签名或内部 CA 证书（见 2.3）                    | `C:\\Users\\zhangsan\\.nunchaku\\server-10.0.0.20.crt` |
-| `NO_PROXY`      | 电脑设置了 HTTP 代理，但网关在内网，不应走代理             | `nunchaku.corp.example.com`          |
-| `HTTPS_PROXY`   | 必须通过代理才能访问网关                                   | `http://proxy.corp.example.com:8080` |
+| 变量              | 何时需要                                       | 示例                                                     |
+| ----------------- | ---------------------------------------------- | -------------------------------------------------------- |
+| `SSL_CERT_FILE` | 网关使用自签名或内部 CA 证书（见 2.3）         | `C:\\Users\\zhangsan\\.nunchaku\\server-10.0.0.20.crt` |
+| `NO_PROXY`      | 电脑设置了 HTTP 代理，但网关在内网，不应走代理 | `nunchaku.corp.example.com`                            |
+| `HTTPS_PROXY`   | 必须通过代理才能访问网关                       | `http://proxy.corp.example.com:8080`                   |
 
 ---
 
