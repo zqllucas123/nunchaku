@@ -1,145 +1,95 @@
 # nunchaku
 
-把私有 Agent Skill 放在服务端执行，并以标准 MCP 工具提供给客户本地的 Codex、Claude Code 等 Agent。当前版本是一个可运行的 POC。详细设计见[架构说明](docs/architecture.md)；客户机器上的接入步骤见[客户端配置与使用手册](docs/client-setup.md)；在公司服务器私有化部署、让员工通过 AIKO 使用，见[私有化部署与使用教程](docs/deployment-guide.md)。
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
+[![MCP](https://img.shields.io/badge/protocol-MCP-green.svg)](https://modelcontextprotocol.io/)
 
-## 架构
+**把私有 Agent Skill 留在服务器上运行，以标准 MCP 工具的形式交给用户本地的 Claude Code、Codex 等 Agent 使用。**
+
+用户照常用自然语言提需求，Skill 的内容和模型凭据始终不离开服务器。
+
+> 项目目前处于 POC 阶段，接口可能变化。
+
+## 为什么需要它
+
+你写了一个好用的 Skill，想给别人用，但又不想把里面的方法论、脚本和 API Key 一起交出去。nunchaku 的做法是：
+
+- **Skill 放在服务器**：用户拿到的只是一个通用连接说明，不包含任何私有内容。
+- **用户无感使用**：在自己的 Agent 里说一句"用 demo-polish 润色 README"，结果直接写回本地文件。
+- **一个入口管所有服务**：服务器新增服务后，用户刷新一下 MCP 连接就能看到，不用重装。
+- **按人授权**：每个用户一个 Service Key，只能调用被授权的服务。
+
+## 工作原理
 
 ```mermaid
-sequenceDiagram
-    participant U as 用户
-    participant A as 本地 Agent
-    participant B as 本地 MCP 桥接器
-    participant M as 远端 MCP 服务
-    participant E as 服务端执行引擎
-    U->>A: 自然语言任务
-    A->>A: 匹配公开的连接 Skill
-    A->>B: MCP tools/call run_skill(task, paths)
-    B->>B: 读取相关本地文件
-    B->>M: MCP tools/call run_skill(task, files)
-    M->>E: 临时工作目录 + 私有 Skill + 快照
-    E-->>M: 答案、修改后的文件
-    M-->>B: answer、changed_files、deleted_files
-    B->>B: 核查哈希并应用到本地
-    B-->>A: 答案、已改文件、冲突
-    A-->>U: 普通 Agent 回复
+flowchart LR
+    subgraph pc["用户电脑"]
+        A["Agent<br/>Claude Code / Codex / AIKO"] -->|stdio MCP| B["nunchaku bridge<br/>只读写 --root 目录"]
+    end
+    subgraph server["服务器"]
+        G["网关<br/>Service Key 鉴权"] --> S["服务进程<br/>每个服务一个"]
+        S --> E["执行引擎 + 私有 Skill<br/>codex / claude / hermes / 自定义"]
+    end
+    B -->|"HTTP(S) MCP"| G
 ```
 
-- **本地公开连接 Skill**：只有用途说明和操作步骤，帮助 Agent 在用户自然语言请求下自动选择 MCP 工具。客户可以看到这部分内容。
-- **本地 MCP 桥接器**：通过 stdio MCP 接入 Codex/Claude Code。Agent 只传路径；桥接器读取文件、调用远端、核查哈希并应用结果。也可跳过桥接器，直连远端 MCP。
-- **远端 MCP 协议**：使用标准 Streamable HTTP。客户端负责 `initialize`、`tools/list`、`tools/call`；本项目不定义另一套传输协议。
-- **应用层协议**：远端 `run_skill(task, files)` 接收 `{path, content, encoding}` 列表，返回 `answer`、`changed_files` 和 `deleted_files`。改动带原文件 `base_sha256` 以检测冲突。路径以客户项目根目录为基准；文本文件以 UTF-8 传输，二进制文件（如 .docx、.xlsx）以 base64 传输。
-- **服务端执行**：每次调用创建临时目录，复制私有 Skill 和明确提交的文件，运行配置的 `codex`、`claude`、`hermes` 或自定义 CLI，收集文件变化，随后删除临时目录。
-- **服务配置**：每个服务一个 Skill、执行引擎和端口；可运行单个服务或全部服务。每个端口都有独立的 `/mcp` 端点。
-- **统一网关**：`nunchaku gateway` 对外只开一个端口。它把 `services.json` 当作服务注册表，每个**正在运行**的服务列为一个 MCP 工具（工具名即服务名），按 `tools/call` 的工具名把请求转发给对应的服务进程。各服务仍是独立进程、独立端口。客户只需配置网关这一个地址；服务端新增服务后，客户刷新 MCP 连接即可看到。
+1. Agent 调用本地桥接器，只传任务描述和文件路径。
+2. 桥接器读取文件，发给服务器上的网关，网关转发给对应服务。
+3. 服务在临时目录里用私有 Skill 运行执行引擎，把改动后的文件返回。
+4. 桥接器校验文件哈希，没有冲突就写回本地。
 
-## 统一网关
+协议细节见[架构说明](docs/architecture.md)。
+
+## 快速开始
+
+需要 Python 3.11+、[uv](https://docs.astral.sh/uv/)，以及服务器上可用的执行引擎 CLI（如 `codex`）。
+
+### 服务端
 
 ```bash
-uv run nunchaku --config services.json serve-all   # 或在管理台逐个启动服务
-uv run nunchaku --config services.json gateway     # 默认 127.0.0.1:8750
+git clone https://github.com/zqllucas123/nunchaku.git
+cd nunchaku
+uv sync
+cp services.example.json services.json
+
+# 创建管理员并打开管理台，在「Service Key」页为用户生成 Key
+uv run nunchaku --config services.json admin add admin
+uv run nunchaku --config services.json dashboard        # http://127.0.0.1:8787/
+
+# 启动所有服务和网关（也可以在管理台里启停）
+uv run nunchaku --config services.json serve-all
+uv run nunchaku --config services.json gateway          # http://127.0.0.1:8750/mcp
 ```
 
-网关地址在 `services.json` 顶层配置，省略时为 `127.0.0.1:8750`，端口不能与任何服务相同：
+示例配置自带一个 `demo-polish` 服务，用来润色中文文档。
+
+### 客户端
+
+```bash
+# 安装 CLI（wheel 由服务端 `uv build` 生成在 dist/ 下）
+uv tool install nunchaku-0.1.1-py3-none-any.whl
+
+# 安装通用连接 Skill，一台机器装一次即可
+nunchaku install-skill
+
+# 注册 MCP，以 Claude Code 为例
+claude mcp add --scope user -e NUNCHAKU_SERVICE_KEY=nk_xxxxxxxx nunchaku -- \
+  nunchaku bridge --url http://127.0.0.1:8750/mcp --root /absolute/path/to/project
+```
+
+然后在 Agent 里直接说：
+
+> 用 demo-polish 润色 README.md 的简介
+
+Codex、AIKO 的配置方法和常见问题见[客户端接入指南](docs/client_use.md)。
+
+## 配置
+
+所有服务都写在 `services.json` 里：
 
 ```json
 {
   "gateway": {"host": "127.0.0.1", "port": 8750},
-  "services": [ ... ]
-}
-```
-
-网关每次 `tools/list` 时检查 `services.json` 是否变化，并探测各服务端口（结果缓存 3 秒），只列出在线的服务，所以增删服务不需要重启网关。管理台顶部也可以启停网关、复制地址、查看日志。网关是唯一对外入口，各服务端口保持只监听本机。
-
-### 鉴权
-
-- **网关要求 Service Key**。管理员在管理台「Service Key」页为每位使用者生成 Key，并限定可访问的服务。客户端以 `Authorization: Bearer nk_…` 携带，桥接器从环境变量 `NUNCHAKU_SERVICE_KEY` 读取。一个 Key 只能看到和调用被授权的服务；停用、改授权立即生效。仅本机访问的开发环境可在 `gateway` 段设 `"auth": false` 关闭。
-- **管理台要求管理员登录**。账号在服务器上用 `nunchaku --config services.json admin add <用户名>` 创建。
-
-管理员账号、会话和 Key 保存在配置文件旁的 `.nunchaku/auth.db`，只存哈希。
-
-客户侧只需安装 wheel、执行 `nunchaku install-skill` 安装通用连接 Skill，再把 `nunchaku bridge --url <网关地址> --root <项目目录>` 配置为名为 `nunchaku` 的 stdio MCP 服务（`env` 中填 `NUNCHAKU_SERVICE_KEY`），详见[客户端配置与使用手册](docs/client-setup.md)。下文的 `client-skill` 是逐服务连接的旧方式，仍然可用，但它直连单个服务端口，不经过网关鉴权，只适合本机或隧道内使用。
-
-## 快速开始
-
-需要 Python 3.11+、`uv` 和服务器上已安装并可用的执行引擎 CLI。引擎自身的模型账号或 API 凭据由服务器持有，客户端不需要这些凭据。
-
-```bash
-uv sync
-cp services.example.json services.json
-uv run nunchaku --config services.json list
-uv run nunchaku --config services.json serve demo-polish
-```
-
-### 可视化管理台
-
-也可以不先创建配置文件，直接启动本机管理台：
-
-```bash
-uv run nunchaku --config services.json admin add admin     # 先创建管理员，交互输入密码
-uv run nunchaku --config services.json dashboard --port 8787
-```
-
-打开 <http://127.0.0.1:8787/> 并用管理员账号登录。页面支持新建、编辑、删除服务；选择私有 Skill 目录、执行引擎、监听地址和端口；启动/停止单个 MCP 服务；查看状态与最近日志；复制 MCP 地址；管理 Service Key；按客户可访问的 URL 下载公开连接包。配置变更会原子写入 `services.json`，日志保存在配置文件旁的 `.nunchaku/logs/`。运行中的服务需要先停止才能修改或删除；退出管理台会停止由它启动的服务。由 systemd 等外部进程运行的服务显示为「外部运行」。
-
-管理台默认只监听 `127.0.0.1`。对外提供时，用 Nginx 以 HTTPS 反向代理，并在 `services.json` 的 `dashboard` 段登记外部主机名、开启 `secure_cookies`，见[私有化部署与使用教程](docs/deployment-guide.md)。管理台显示的 `127.0.0.1` MCP 地址仅对服务端本机有效；可在 `dashboard.public_gateway_url` 填写客户实际使用的网关地址。
-
-示例只监听 `127.0.0.1:8765`。另一个终端把本地连接 Skill 生成到任意临时目录：
-
-```bash
-uv run nunchaku --config services.json client-skill demo-polish \
-  --url http://127.0.0.1:8765/mcp \
-  --output /tmp/demo-polish-remote
-uv build
-```
-
-跨机器验证时，可先建立 SSH 端口转发（在客户机器执行 `ssh -L 8765:127.0.0.1:8765 user@provider-host`），再让连接配置使用 `http://127.0.0.1:8765/mcp`。这里的 `user@provider-host` 是占位值；当前 POC 没有鉴权，不要直接开放公网端口。
-
-给客户分发通用 `nunchaku` wheel 和上一步生成的公开连接 Skill；wheel 不包含真实私有 Skill。客户机器安装 wheel 后配置本地桥接器。以下以 Codex 为例（wheel 文件名以实际构建结果为准；命令在客户机器执行）：
-
-```bash
-uv tool install dist/nunchaku-0.1.1-py3-none-any.whl
-mkdir -p ~/.agents/skills
-cp -R /tmp/demo-polish-remote ~/.agents/skills/
-codex mcp add nunchaku-demo-polish -- nunchaku bridge \
-  --connector "$HOME/.agents/skills/demo-polish-remote/connector.json" \
-  --root /absolute/path/to/customer/project
-codex mcp list
-```
-
-Codex 对 MCP 工具有自己的审批和超时设置。桥接器默认会写入客户项目；客户确认信任该服务后，可在 `~/.codex/config.toml` 的相应服务配置中加入以下值，以减少每次调用的审批打断，并让 180 秒的远端任务有足够时间返回：
-
-```toml
-[mcp_servers.nunchaku-demo-polish]
-tool_timeout_sec = 210
-
-[mcp_servers.nunchaku-demo-polish.tools.run_skill]
-approval_mode = "approve"
-```
-
-如果希望每次调用都先由客户审核，保留默认审批设置即可。某些禁用审批请求的 Codex 环境会直接阻止未经批准的写入型 MCP 工具；此时需要上述按工具信任配置。[Codex 配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)列出了这两个字段。
-
-Claude Code 也可以连接同一地址：
-
-```bash
-mkdir -p ~/.claude/skills
-cp -R /tmp/demo-polish-remote ~/.claude/skills/
-claude mcp add --scope user nunchaku-demo-polish -- nunchaku bridge \
-  --connector "$HOME/.claude/skills/demo-polish-remote/connector.json" \
-  --root /absolute/path/to/customer/project
-```
-
-Hermes 可用 `hermes mcp add nunchaku-demo-polish --url http://127.0.0.1:8765/mcp` 直连远端；也可以把 `nunchaku bridge ...` 作为 stdio MCP 命令配置给 Hermes。生成的 `agents/openai.yaml` 提供 Codex 的连接 Skill 展示信息。
-
-用户随后可在本地 Agent 中说“请用 demo-polish 润色 README 的简介”。本地 Agent 调用 `run_skill(task, paths)`；桥接器读取 `README.md`，调用远端服务，核对哈希并应用结果。对于只有问答的 Skill，`paths` 可为空。`apply_changes: false` 可只返回提议，不写客户文件。
-
-如果不安装本地桥接器，可用 `client-skill --mode direct` 生成直连版公开 Skill，再用 `codex mcp add nunchaku-demo-polish --url https://your-host/mcp` 配置。直连版要求 Agent 自行传入文件内容并处理返回文件。
-
-## 服务配置
-
-`services.json` 的 `services` 数组可以添加多个服务：
-
-```json
-{
   "services": [
     {
       "name": "my-skill",
@@ -154,80 +104,73 @@ Hermes 可用 `hermes mcp add nunchaku-demo-polish --url http://127.0.0.1:8765/m
 }
 ```
 
-`skill` 也可相对配置文件所在目录。每个目录必须有 `SKILL.md`。`command` 可选，用于指定 CLI 可执行文件路径；默认使用与 `engine` 同名的命令。`serve-all` 会为每个服务启动一个子进程。`client-skill` 生成的 Skill 和实际的私有 Skill 是两份内容，部署时只给客户前者。
+| 字段 | 说明 |
+| --- | --- |
+| `name` | 服务名，也是用户看到的 MCP 工具名 |
+| `description` | 工具描述，Agent 靠它判断何时调用 |
+| `skill` | 私有 Skill 目录，必须包含 `SKILL.md`；可写相对配置文件的路径 |
+| `engine` | `codex`、`claude`、`hermes` 或 `custom` |
+| `command` | 可选，引擎可执行文件路径，默认与 `engine` 同名 |
+| `port` | 服务端口，只监听本机，不能与网关端口相同 |
+| `timeout_seconds` | 单次调用超时，默认 180 秒 |
+
+网关每次列出工具时会重新读取配置，增删服务不需要重启网关。仅在本机开发时，可在 `gateway` 段设 `"auth": false` 关闭鉴权。
 
 ### 自定义引擎
 
-如果不用 Codex、Claude 或 Hermes，而是用自己的 Agent CLI，把 `engine` 设为 `custom`，并提供 `command` 和 `args`：
+想用自己的 Agent CLI，把 `engine` 设为 `custom`，并提供 `command` 和 `args`：
 
 ```json
 {
-  "name": "my-skill",
-  "description": "为技术文档提供语言润色和结构建议。",
-  "skill": "/srv/private-skills/my-skill",
   "engine": "custom",
   "command": "/usr/local/bin/my-agent",
-  "args": ["run", "--cwd", "{workspace}", "--output", "{output}", "--prompt", "{prompt}"],
-  "port": 8765
+  "args": ["run", "--cwd", "{workspace}", "--output", "{output}", "--prompt", "{prompt}"]
 }
 ```
-
-`args` 的每一项就是一个独立的命令行参数，不经过 shell。可用的占位符有：
 
 | 占位符 | 含义 |
 | --- | --- |
-| `{prompt}` | 完整任务提示词，包含私有 Skill 的位置和用户任务 |
-| `{workspace}` | 本次调用的临时工作目录，同时也是进程的 cwd |
-| `{output}` | 最终答复文件的路径；引擎没写这个文件时，以 stdout 作为答复 |
-| `{skill}` | 私有 Skill 在工作目录里的副本（`.agents/skills/<name>`） |
+| `{prompt}` | 完整提示词。`args` 里不写它时，提示词从 stdin 传入 |
+| `{workspace}` | 本次调用的临时工作目录，也是进程的 cwd |
+| `{output}` | 最终答复文件；引擎没写这个文件时，以 stdout 作为答复 |
+| `{skill}` | 私有 Skill 在工作目录里的副本 |
 
-`args` 里没有 `{prompt}` 时，提示词通过 stdin 传入。引擎必须能非交互地运行完就退出，并直接在 `{workspace}` 里修改文件；退出码非 0 视为失败。管理台「新建服务」里选「自定义引擎」也能填写这些项，命令参数一行一个。
+引擎需要非交互地运行、直接修改 `{workspace}` 里的文件，然后退出；退出码非 0 视为失败。
 
-## `run_skill` 数据契约
+## 文档
 
-请求示例：
+| 文档 | 适合谁 |
+| --- | --- |
+| [架构说明](docs/architecture.md) | 想了解设计和协议的开发者 |
+| [私有化部署教程](docs/deployment-guide.md) | 在公司服务器上部署的管理员（systemd、Nginx、HTTPS） |
+| [客户端接入指南](docs/client_use.md) | 第一次接入的用户，按步骤操作 |
+| [客户端配置手册](docs/client-setup.md) | 需要查阅各客户端配置细节和报错的用户 |
 
-```json
-{
-  "task": "把 README 的开头写得更清楚，并按模板生成 Word 版",
-  "files": [
-    {"path": "README.md", "content": "# 项目\n原始介绍...\n"},
-    {"path": "template.docx", "content": "<base64>", "encoding": "base64"}
-  ]
-}
-```
+## 安全说明
 
-结果示例：
+- 网关和管理台对外提供时都应走 HTTPS；各服务进程只应监听本机，由网关访问。
+- 管理员账号、会话和 Service Key 保存在 `.nunchaku/auth.db`，只存哈希。
+- 用户提交的文件会上传到服务器。
+- **提示词无法做到绝对保密**：持有 Key 的人可能反复提问，诱导模型复述私有 Skill。真正需要保密的算法、数据和规则，应放在服务端代码或受控工具里，而不是写进提示词。
 
-```json
-{
-  "service": "my-skill",
-  "engine": "codex",
-  "answer": "已重写开头两段，并生成 README.docx。",
-  "changed_files": [
-    {"path": "README.md", "content": "# 项目\n新介绍...\n", "encoding": "utf-8", "base_sha256": "<原文件的 SHA-256>"},
-    {"path": "README.docx", "content": "<base64>", "encoding": "base64", "base_sha256": null}
-  ],
-  "deleted_files": [],
-  "note": "Changes are proposals. The local Agent must review and apply them in the user's workspace."
-}
-```
+## 限制
 
-每个文件条目的 `encoding` 为 `utf-8`（默认，文本）或 `base64`（二进制，如 .docx、.xlsx、图片）。服务端输出能按 UTF-8 解码的文件以文本返回，其余一律 base64。`base_sha256` 按原始字节计算。使用本地桥接器时，Agent 只传路径，编码由桥接器自动处理；有冲突或 `apply_changes: false` 时，二进制提议不内联返回，而是写到客户项目的 `.nunchaku/proposed/<path>`，由 `proposed_file` 指出位置。
+- 单次调用最多 50 个文件，单文件 10 MB，总计 20 MB。
+- 每次调用无状态，要接着上一轮继续，需要重新提供上下文。
+- 暂不支持流式进度、大型项目同步，以及远端在执行中回调本地工具。
 
-这个 POC 限制为最多 50 个输入/输出文件，单文件 10 MB、总计 20 MB（按解码后的字节计）；单次调用超时默认 180 秒。每次调用无状态，本地 Agent 若要继续上一轮，需把必要上下文再次传入。增量流式进度、大型项目同步和远端实时调用本地工具尚未实现。
+后续计划：调用配额、容器隔离、日志脱敏、网关到服务的内部鉴权，以及支持 Skill 在执行中按需读写本地文件的双向协议。
 
-## 部署边界与下一步
-
-网关按 Service Key 鉴权并按服务授权，管理台需要管理员登录；两者都应经 HTTPS 对外提供。各服务进程自身不校验 Key，只应监听本机、由网关访问。客户提交的文件会传到服务端；持有 Key 的人也可能反复向模型提问，试图诱导它复述私有 Skill。私有提示词不能单靠“不要泄露”的指令实现严格保密；真正必须保密的算法、数据和规则应放在服务端代码或受控工具里，不交给可被客户自由提示的模型上下文。
-
-后续可补充：调用配额、每次执行的容器隔离、日志脱敏、密钥隔离、网关到服务进程的内部鉴权。若 Skill 必须像本地一样逐步读写整个项目，可在下一阶段增加**本地代理 + 受控文件工具反向调用**，由本地代理对每个读写动作进行路径校验和用户确认；当前 POC 采用显式快照与结果回传，以便先验证客户体验和执行效果。
-
-## 开发验证
+## 开发
 
 ```bash
+uv sync
 uv run python -m unittest discover -s tests -v
-uv run python tests/manual_codex_e2e.py  # 可选：使用真实 Codex 验证自然语言触发，消耗模型额度
+
+# 可选：用真实 Codex 跑端到端测试，会消耗模型额度
+uv run python tests/manual_codex_e2e.py
 ```
 
-有关 Codex 的 MCP 配置和 Skill 分工，参见[官方 OpenAI 文档：Docs MCP](https://developers.openai.com/learn/docs-mcp)与[Skills 和 MCP 的关系](https://developers.openai.com/plugins/concepts/skills)。MCP 服务端实现参见[官方 MCP Python SDK 文档](https://py.sdk.modelcontextprotocol.io/run/)。
+## 许可证
+
+[Apache License 2.0](LICENSE)
