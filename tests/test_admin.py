@@ -35,7 +35,13 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
                 empty = await client.get("/api/services")
                 self.assertEqual(empty.json(), {"services": []})
                 self.assertEqual((await client.get("/")).status_code, 200)
-                self.assertIn("Skill 服务台", (await client.get("/")).text)
+                page = (await client.get("/")).text
+                self.assertIn("<h1>远程Skill 服务</h1>", page)
+                self.assertNotIn("Skill 服务台", page)
+                services_view = page.split('id="services"', 1)[1].split('id="keys"', 1)[0]
+                self.assertNotIn("POC 环境", services_view)
+                self.assertIn("SERVICE CONSOLE", services_view)
+                self.assertIn("配置私有 Skill，启动 MCP 服务，向客户交付公开连接包。", services_view)
 
                 payload = {"name": "private-demo", "description": "Help with text", "skill": str(skill),
                            "engine": "codex", "host": "127.0.0.1", "port": port,
